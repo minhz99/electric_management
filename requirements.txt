@@ -1,0 +1,7 @@
+python-dotenv
+paho-mqtt==1.6.1
+influxdb==5.3.1
+influxdb-client==1.42.0
+schedule==1.2.0
+numpy==1.24.3
+pandas==2.0.3
