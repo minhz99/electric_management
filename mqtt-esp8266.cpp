@@ -9,10 +9,10 @@ const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
 
 // ===== MQTT Config =====
-const char* mqtt_server = "192.168.100.51";   // EMQX broker IP
+const char* mqtt_server = "YOUR_MQTT_BROKER_IP";   // EMQX broker IP
 const int   mqtt_port   = 1883;
-const char* mqtt_pub_topic  = "testtopic/pzem004t";      // Topic gửi dữ liệu
-const char* mqtt_sub_topic  = "testtopic/pzem004t/cmd";  // Topic nhận lệnh
+const char* mqtt_pub_topic  = "YOUR_MQTT_PUB_TOPIC";      // Topic gửi dữ liệu
+const char* mqtt_sub_topic  = "YOUR_MQTT_SUB_TOPIC";  // Topic nhận lệnh
 
 WiFiClient espClient;
 PubSubClient client(espClient);
