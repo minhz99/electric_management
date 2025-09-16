@@ -23,8 +23,6 @@ Hệ thống giám sát và quản lý điện năng sử dụng ESP8266, cảm 
 
 ### Dữ liệu được tính toán (đã lưu InfluxDB):
 - **data**: Dữ liệu realtime (6 thông số + tiêu thụ và tiền điện hiện tại)
-- **daily**: Snapshot ngày đã kết thúc (kWh và tiền điện theo ngày)  
-- **monthly**: Snapshot tháng đã kết thúc (kWh và tiền điện theo tháng)
 
 ## Cài đặt
 
@@ -34,9 +32,11 @@ git clone <repository-url>
 cd electric_management
 ```
 
-2. **Cài đặt dependencies:**
+2. **Tạo virtual environment và cài đặt dependencies:**
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+pip install schedule paho-mqtt influxdb-client python-dotenv
 ```
 
 3. **Cấu hình môi trường (InfluxDB v2 bắt buộc):**
@@ -81,6 +81,12 @@ File `mqtt-esp8266.cpp` đã được cấu hình để:
 ## Chạy hệ thống
 
 ```bash
+source .venv/bin/activate
+python main.py
+```
+
+Hoặc với biến môi trường inline:
+```bash
 INFLUX_HOST=192.168.100.51 INFLUX_PORT=8086 \
 INFLUX_TOKEN=... INFLUX_ORG=... INFLUX_BUCKET=electricity \
 MQTT_BROKER=192.168.100.51 MQTT_TOPICS=testtopic/pzem004t \
@@ -94,19 +100,11 @@ python main.py
   - `voltage`, `current`, `power`, `energy`, `frequency`, `power_factor` (từ PZEM)
   - `daily_kwh`, `monthly_kwh` (điện tiêu thụ hiện tại)
   - `daily_cost`, `monthly_cost` (tiền điện hiện tại)
-- **Tags**: `device=ESP8266_PZEM`, `location=main`, `period=current`
+- **Tags**: Không có tags
 
-### Measurement: `daily` (Snapshot theo ngày)  
-- **Fields**: `energy_day_kwh`, `cost_total`
-- **Tags**: `period=daily`, `date=YYYY-MM-DD`, `year`, `month`, `device`
-
-### Measurement: `monthly` (Snapshot theo tháng)
-- **Fields**: `energy_month_kwh`, `cost_total`
-- **Tags**: `period=monthly`, `month=YYYY-MM`, `year`, `device`
-
-### Measurement: `system_events`
-- **Fields**: `event`, `energy_baseline`
-- **Tags**: `type=reset`
+### Reset tự động:
+- **Hàng ngày lúc 00:00**: Reset baseline để tính `daily_kwh` từ 0
+- **Đầu tháng (ngày 1)**: Reset baseline để tính `monthly_kwh` từ 0
 
 ## API Usage
 
@@ -198,37 +196,18 @@ from(bucket: "electricity")
   |> aggregateWindow(every: 1h, fn: last)
 ```
 
-#### Panel: Lịch sử theo tháng
-```flux
-from(bucket: "electricity")
-  |> range(start: -1y)
-  |> filter(fn: (r) => r["_measurement"] == "monthly")
-  |> filter(fn: (r) => r["_field"] == "energy_month_kwh" or r["_field"] == "cost_total")
-  |> sort(columns: ["_time"])
-```
-
-#### Panel: Lịch sử theo ngày (30 ngày gần nhất)
-```flux
-from(bucket: "electricity")
-  |> range(start: -30d)
-  |> filter(fn: (r) => r["_measurement"] == "daily")
-  |> filter(fn: (r) => r["_field"] == "energy_day_kwh" or r["_field"] == "cost_total")
-  |> sort(columns: ["_time"])
-```
-
 ### 4. Các loại biểu đồ khuyến nghị
 
 #### Realtime Dashboard:
 - **Time Series**: Điện áp, dòng điện, công suất theo thời gian thực
 - **Stat Panel**: Giá trị hiện tại (V, A, W, kWh)
 - **Gauge**: Hệ số công suất (0-1)
-- **Bar Chart**: Tiêu thụ điện hôm nay vs. hôm qua
+- **Bar Chart**: Tiêu thụ điện hôm nay so với baseline
 
 #### Historical Dashboard:
-- **Bar Chart**: So sánh tiêu thụ điện theo tháng (kWh và VNĐ)
+- **Time Series**: Xu hướng tiêu thụ điện theo thời gian
 - **Heatmap**: Mức tiêu thụ theo giờ trong ngày
-- **Table**: Top 10 ngày tiêu thụ nhiều nhất
-- **Pie Chart**: Phân bổ chi phí theo bậc giá điện
+- **Table**: Thống kê tổng quan tiêu thụ điện
 
 #### Trend Analysis:
 - **Time Series**: Xu hướng tiêu thụ 30 ngày gần nhất

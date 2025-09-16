@@ -6,7 +6,7 @@ Tính toán điện tiêu thụ hàng ngày/tháng và dự đoán
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import schedule
 import time
 from typing import Dict
@@ -84,79 +84,20 @@ from(bucket: "{INFLUX_BUCKET}")
     def _reset_monthly_energy(self):
         """Reset energy baseline đầu tháng"""
         try:
-            if self.last_energy_reading is not None and self.monthly_start_energy is not None:
-                # Ghi snapshot cho tháng vừa kết thúc
-                now = datetime.now()
-                last_month = now.replace(day=1) - timedelta(days=1)
-                month_str = last_month.strftime("%Y-%m")
-                energy_month = max(0, self.last_energy_reading - self.monthly_start_energy)
-                month_cost = calc_electricity_cost(energy_month)
-
-                write_influx(
-                    self.influx_client,
-                    "monthly",
-                    {
-                        "energy_month_kwh": energy_month,
-                        "cost_total": month_cost['total']
-                    },
-                    {
-                        "period": "monthly", 
-                        "month": month_str,
-                        "year": str(last_month.year),
-                        "device": "ESP8266_PZEM"
-                    }
-                )
-
+            if self.last_energy_reading is not None:
                 # Cập nhật baseline cho tháng mới
                 self.monthly_start_energy = self.last_energy_reading
                 logger.info(f"Reset monthly energy baseline: {self.monthly_start_energy} kWh")
-
-                # Ghi log sự kiện
-                write_influx(
-                    self.influx_client,
-                    "system_events",
-                    {"event": "monthly_reset", "energy_baseline": self.monthly_start_energy},
-                    {"type": "reset"}
-                )
         except Exception as e:
             logger.error(f"Lỗi reset monthly energy: {e}")
     
     def _reset_daily_energy(self):
         """Reset energy baseline đầu ngày"""
         try:
-            if self.last_energy_reading is not None and self.daily_start_energy is not None:
-                # Ghi snapshot cho ngày vừa kết thúc
-                yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
-                energy_day = max(0, self.last_energy_reading - self.daily_start_energy)
-                day_cost = calc_electricity_cost(energy_day)
-
-                write_influx(
-                    self.influx_client,
-                    "daily",
-                    {
-                        "energy_day_kwh": energy_day,
-                        "cost_total": day_cost['total']
-                    },
-                    {
-                        "period": "daily", 
-                        "date": yesterday,
-                        "year": str((datetime.now() - timedelta(days=1)).year),
-                        "month": str((datetime.now() - timedelta(days=1)).month),
-                        "device": "ESP8266_PZEM"
-                    }
-                )
-
+            if self.last_energy_reading is not None:
                 # Cập nhật baseline cho ngày mới
                 self.daily_start_energy = self.last_energy_reading
                 logger.info(f"Reset daily energy baseline: {self.daily_start_energy} kWh")
-
-                # Ghi log sự kiện
-                write_influx(
-                    self.influx_client,
-                    "system_events",
-                    {"event": "daily_reset", "energy_baseline": self.daily_start_energy},
-                    {"type": "reset"}
-                )
         except Exception as e:
             logger.error(f"Lỗi reset daily energy: {e}")
     
@@ -225,14 +166,10 @@ from(bucket: "{INFLUX_BUCKET}")
                     "daily_cost": daily_cost['total'],
                     "monthly_cost": monthly_cost['total']
                 },
-                {
-                    "device": "ESP8266_PZEM", 
-                    "location": "main",
-                    "period": "current"
-                }
+                {}
             )
             
-            # Không ghi 'daily' và 'monthly' ở đây; các snapshot sẽ được ghi khi reset
+            # Chỉ ghi dữ liệu realtime, không ghi snapshot
             
             logger.info(f"Đã xử lý dữ liệu: Power={power}W, Energy={energy}kWh, Daily={daily_consumption:.3f}kWh, Monthly={monthly_consumption:.3f}kWh")
             
