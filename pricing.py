@@ -43,6 +43,11 @@ def calc_electricity_cost(kwh: float) -> dict:
     vat = subtotal * VAT_RATE
     total = subtotal + vat
 
+    # Làm tròn tiền tệ về VNĐ (không có phần thập phân)
+    subtotal = round(subtotal)
+    vat = round(vat)
+    total = round(total)
+
     return {
         "kWh": kwh,
         "subtotal": subtotal,
