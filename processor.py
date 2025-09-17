@@ -183,10 +183,10 @@ from(bucket: "{INFLUX_BUCKET}")
             logger.warning("Không có dữ liệu energy, sử dụng giá trị mặc định 0")
             return
         
-        # Nếu không tìm thấy baseline đầu tháng, sử dụng energy hiện tại
-        if self.monthly_start_energy == 0:
-            self.monthly_start_energy = self.last_energy_reading
-            logger.warning(f"Không tìm thấy baseline đầu tháng, sử dụng energy hiện tại: {self.monthly_start_energy} kWh")
+        # Monthly baseline luôn = 0 vì PZEM reset đầu tháng
+        if self.monthly_start_energy != 0:
+            logger.info(f"Điều chỉnh monthly baseline từ {self.monthly_start_energy} về 0 (PZEM reset đầu tháng)")
+            self.monthly_start_energy = 0
         
         # Nếu không tìm thấy baseline đầu ngày, sử dụng energy hiện tại
         if self.daily_start_energy == 0:
@@ -203,34 +203,64 @@ from(bucket: "{INFLUX_BUCKET}")
             self.daily_start_energy = self.last_energy_reading
     
     def _detect_pzem_reset(self, new_energy):
-        """Phát hiện PZEM004T bị reset counter"""
+        """Phát hiện PZEM004T bị reset counter bất thường"""
         if self.last_energy_reading is None:
             return  # Lần đầu tiên nhận dữ liệu
         
-        # Phát hiện energy giảm đột ngột (có thể do PZEM reset)
+        # Kiểm tra xem có phải đầu tháng không (reset tự nhiên)
+        now = datetime.now(TIMEZONE_GMT7)
+        is_month_start = (now.day == MONTH_START_DAY and now.hour < 2)  # Trong 2 giờ đầu của ngày 1
+        
+        # Phát hiện energy giảm đột ngột
         if new_energy < self.last_energy_reading * 0.5:
-            logger.critical("🚨 PZEM RESET DETECTED!")
-            logger.critical(f"   Energy giảm từ {self.last_energy_reading} kWh xuống {new_energy} kWh")
-            logger.critical(f"   Điều này có thể do:")
-            logger.critical(f"   - PZEM004T bị reset/mất điện")
-            logger.critical(f"   - ESP8266 reboot")
-            logger.critical(f"   - Lỗi sensor hoặc nhiễu điện từ")
-            logger.critical(f"   ⚠️  CẢNH BÁO: Dữ liệu tiêu thụ điện sẽ bị sai!")
-            logger.critical(f"   💡 KHUYẾN NGHỊ: Reset baseline thủ công hoặc kiểm tra phần cứng")
-            
-            # Có thể thêm logic gửi email/webhook alert ở đây
-            self._trigger_pzem_reset_alert(self.last_energy_reading, new_energy)
+            if is_month_start:
+                # Reset tự nhiên đầu tháng - chỉ log info
+                logger.info("📅 PZEM monthly reset detected (normal)")
+                logger.info(f"   Energy reset từ {self.last_energy_reading} kWh về {new_energy} kWh")
+                logger.info(f"   Đây là reset tự nhiên đầu tháng - hoàn toàn bình thường")
+                
+                # Ghi log để tracking nhưng không alert
+                try:
+                    reset_data = {
+                        "reset_type": "monthly_natural",
+                        "old_energy": self.last_energy_reading,
+                        "new_energy": new_energy,
+                        "month": now.month,
+                        "year": now.year
+                    }
+                    write_influx(
+                        self.influx_client,
+                        "pzem_resets",
+                        reset_data,
+                        {"reset_type": "monthly_natural"}
+                    )
+                except Exception as e:
+                    logger.error(f"Lỗi ghi monthly reset log: {e}")
+            else:
+                # Reset bất thường - cần alert
+                logger.critical("🚨 ABNORMAL PZEM RESET DETECTED!")
+                logger.critical(f"   Energy giảm từ {self.last_energy_reading} kWh xuống {new_energy} kWh")
+                logger.critical(f"   Thời điểm: {now.strftime('%Y-%m-%d %H:%M:%S')} (không phải đầu tháng)")
+                logger.critical(f"   Điều này có thể do:")
+                logger.critical(f"   - PZEM004T bị reset/mất điện bất thường")
+                logger.critical(f"   - ESP8266 reboot")
+                logger.critical(f"   - Lỗi sensor hoặc nhiễu điện từ")
+                logger.critical(f"   ⚠️  CẢNH BÁO: Dữ liệu tiêu thụ điện sẽ bị sai!")
+                logger.critical(f"   💡 KHUYẾN NGHỊ: Reset baseline thủ công hoặc kiểm tra phần cứng")
+                
+                # Alert cho reset bất thường
+                self._trigger_pzem_reset_alert(self.last_energy_reading, new_energy, is_abnormal=True)
     
-    def _trigger_pzem_reset_alert(self, old_energy, new_energy):
+    def _trigger_pzem_reset_alert(self, old_energy, new_energy, is_abnormal=False):
         """Kích hoạt cảnh báo khi phát hiện PZEM reset"""
         try:
             # Ghi vào InfluxDB để tracking
             alert_data = {
-                "alert_type": "pzem_reset",
+                "alert_type": "pzem_reset_abnormal" if is_abnormal else "pzem_reset",
                 "old_energy": old_energy,
                 "new_energy": new_energy,
                 "energy_drop_ratio": new_energy / old_energy if old_energy > 0 else 0,
-                "severity": "critical"
+                "severity": "critical" if is_abnormal else "warning"
             }
             
             write_influx(
@@ -363,12 +393,15 @@ from(bucket: "{INFLUX_BUCKET}")
             logger.error(f"Lỗi midnight job: {e}")
     
     def _reset_monthly_energy(self):
-        """Reset energy baseline đầu tháng"""
+        """Reset energy baseline đầu tháng (PZEM tự reset về 0)"""
         try:
-            if self.last_energy_reading is not None:
-                # Cập nhật baseline cho tháng mới
-                self.monthly_start_energy = self.last_energy_reading
-                logger.info(f"Reset monthly energy baseline: {self.monthly_start_energy} kWh")
+            # PZEM004T tự reset về 0 đầu tháng, nên baseline = 0
+            self.monthly_start_energy = 0
+            logger.info("Reset monthly energy baseline: 0 kWh (PZEM tự reset đầu tháng)")
+            
+            # Log để tracking
+            now = datetime.now(TIMEZONE_GMT7)
+            logger.info(f"Bắt đầu tháng {now.month}/{now.year} - PZEM sẽ tự reset counter")
         except Exception as e:
             logger.error(f"Lỗi reset monthly energy: {e}")
     
@@ -430,8 +463,11 @@ from(bucket: "{INFLUX_BUCKET}")
             self.last_data_time = timestamp
             
             # Tính toán điện tiêu thụ
-            daily_consumption = max(0, energy - self.daily_start_energy) if self.daily_start_energy is not None else 0
-            monthly_consumption = max(0, energy - self.monthly_start_energy) if self.monthly_start_energy is not None else 0
+            # Monthly: PZEM tự reset đầu tháng, nên energy = tích lũy tháng hiện tại
+            monthly_consumption = energy
+            
+            # Daily: energy hiện tại - energy lúc 00:00 hôm nay
+            daily_consumption = max(0, energy - self.daily_start_energy) if self.daily_start_energy is not None else energy
             
             # Tính giá tiền theo bậc thang tích lũy trong tháng
             # - Giá điện hàng ngày được tính từ tổng tiêu thụ tích lũy từ đầu tháng
@@ -483,8 +519,11 @@ from(bucket: "{INFLUX_BUCKET}")
         """Lấy tổng quan điện tiêu thụ"""
         try:
             # Tính toán hiện tại
-            daily_consumption = max(0, self.last_energy_reading - self.daily_start_energy) if self.daily_start_energy is not None else 0
-            monthly_consumption = max(0, self.last_energy_reading - self.monthly_start_energy) if self.monthly_start_energy is not None else 0
+            # Monthly: PZEM tự reset đầu tháng, energy = tích lũy tháng hiện tại
+            monthly_consumption = self.last_energy_reading if self.last_energy_reading is not None else 0
+            
+            # Daily: energy hiện tại - energy lúc 00:00 hôm nay
+            daily_consumption = max(0, self.last_energy_reading - self.daily_start_energy) if (self.last_energy_reading is not None and self.daily_start_energy is not None) else (self.last_energy_reading or 0)
             
             # Tính giá tiền theo bậc thang tích lũy trong tháng
             monthly_cost = calc_electricity_cost(monthly_consumption)
