@@ -11,7 +11,16 @@ import time
 from typing import Dict
 import schedule
 
-from config import init_firebase, init_mqtt, TIMEZONE_GMT7
+from config import (
+    init_firebase,
+    init_mqtt,
+    TIMEZONE_GMT7,
+    DAILY_RESET_TIME,
+    MONTH_START_DAY,
+    PZEM_ENERGY_OFFSET_KWH,
+)
+
+STATE_COORD_VERSION = "adjusted_v1"
 from pricing import calc_electricity_cost
 
 # Setup logging
@@ -31,76 +40,104 @@ class ElectricityProcessor:
         self.history_ref = self.firebase_ref.child('history') if self.firebase_ref else None
         
         self.last_energy_reading = None
-        self.monthly_start_energy = 0.0
-        self.daily_start_energy = 0.0
+        self.monthly_start_energy = None
+        self.daily_start_energy = None
         
         self.last_save_hour = -1
         
         # Khởi tạo giá trị ban đầu từ Firebase
         self._initialize_energy_baseline()
         
-        schedule.every().day.at("00:00").do(self._reset_daily_energy)
+        schedule.every().day.at(DAILY_RESET_TIME).do(self._reset_daily_and_monthly_baselines)
         
         logger.info("Đã khởi tạo ElectricityProcessor.")
     
+    @staticmethod
+    def _to_adjusted_kwh(raw_energy: float) -> float:
+        """Chuyển kWh thô từ PZEM sang kWh quy chiếu (đã trừ offset công tơ cũ)."""
+        return max(0.0, raw_energy - PZEM_ENERGY_OFFSET_KWH)
+
+    def _state_coordinate_ok(self, state: dict) -> bool:
+        if state.get("coord_version") != STATE_COORD_VERSION:
+            return False
+        try:
+            saved_off = float(state.get("pzem_energy_offset_kwh", -1.0))
+        except (TypeError, ValueError):
+            return False
+        return abs(saved_off - PZEM_ENERGY_OFFSET_KWH) < 1e-6
+
     def _initialize_energy_baseline(self):
-        """Khởi tạo baseline energy cho tháng/ngày hiện tại từ Firebase state"""
+        """Khôi phục baseline từ Firebase; bù ngày/tháng nếu server tắt qua ranh giới."""
         if not self.state_ref:
             return
-            
+
         try:
             state = self.state_ref.get()
             now = datetime.now(TIMEZONE_GMT7)
-            today_str = now.strftime('%Y-%m-%d')
+            today_str = now.strftime("%Y-%m-%d")
             current_month = now.month
-            
-            if state:
-                saved_date = state.get('last_date', '')
-                saved_month = state.get('last_month', 0)
-                
-                self.last_energy_reading = state.get('last_energy', 0)
-                self.monthly_start_energy = state.get('monthly_start_energy', 0.0)
-                self.daily_start_energy = state.get('daily_start_energy', 0.0)
-                
-                # Cập nhật logic qua ngày/tháng mới khi server đang tắt
-                if saved_month != current_month:
-                    logger.info("Phát hiện qua tháng mới trong lúc server tắt. Baseline tháng sẽ chờ PZEM reset.")
-                
-                if saved_date != today_str:
-                    logger.info("Phát hiện qua ngày mới trong lúc server tắt. Reset daily baseline.")
-                    self.daily_start_energy = self.last_energy_reading if self.last_energy_reading else 0.0
-                
-                logger.info("Khôi phục state từ Firebase thành công:")
-                logger.info(f"  - Energy cuối: {self.last_energy_reading} kWh")
-                logger.info(f"  - Baseline tháng: {self.monthly_start_energy} kWh")
-                logger.info(f"  - Baseline ngày: {self.daily_start_energy} kWh")
-            else:
+
+            if not state:
                 logger.info("Node state trống trên Firebase, sẽ tạo state mới ở lần nhận dữ liệu đầu tiên.")
-                
+                return
+
+            if not self._state_coordinate_ok(state):
+                logger.info(
+                    "State cũ hoặc đổi PZEM_ENERGY_OFFSET_KWH: khởi tạo lại baseline từ mẫu điện tiếp theo."
+                )
+                return
+
+            saved_date = state.get("last_date", "")
+            saved_month = int(state.get("last_month", 0) or 0)
+
+            self.last_energy_reading = float(state.get("last_energy", 0.0))
+            self.monthly_start_energy = float(state.get("monthly_start_energy", 0.0))
+            self.daily_start_energy = float(state.get("daily_start_energy", 0.0))
+
+            if saved_month != current_month:
+                logger.info("Qua tháng mới khi server tắt — baseline tháng = chỉ số cuối đã lưu.")
+                self.monthly_start_energy = self.last_energy_reading
+
+            if saved_date != today_str:
+                logger.info("Qua ngày mới khi server tắt — baseline ngày = chỉ số cuối đã lưu.")
+                self.daily_start_energy = self.last_energy_reading
+
+            logger.info("Khôi phục state từ Firebase thành công:")
+            logger.info(f"  - Energy cuối (đã trừ offset): {self.last_energy_reading} kWh")
+            logger.info(f"  - Baseline tháng: {self.monthly_start_energy} kWh")
+            logger.info(f"  - Baseline ngày: {self.daily_start_energy} kWh")
+
         except Exception as e:
             logger.error(f"Lỗi khởi tạo energy baseline từ Firebase: {e}")
-    
-    def _reset_daily_energy(self):
-        """Reset daily energy baseline (called by schedule)"""
-        if self.last_energy_reading is not None:
-            self.daily_start_energy = self.last_energy_reading
-            self._save_state(self.last_energy_reading)
-            logger.info(f"Đã reset daily baseline qua ngày mới: {self.daily_start_energy} kWh")
+
+    def _reset_daily_and_monthly_baselines(self):
+        """00:00: baseline ngày; ngày MONTH_START_DAY: baseline tháng (công tơ không reset)."""
+        if self.last_energy_reading is None:
+            return
+        now = datetime.now(TIMEZONE_GMT7)
+        self.daily_start_energy = self.last_energy_reading
+        if now.day == MONTH_START_DAY:
+            self.monthly_start_energy = self.last_energy_reading
+            logger.info(f"Đầu tháng — baseline tháng = {self.monthly_start_energy} kWh (đã trừ offset)")
+        self._save_state(self.last_energy_reading)
+        logger.info(f"Đầu ngày — baseline ngày = {self.daily_start_energy} kWh (đã trừ offset)")
 
     def _save_state(self, current_energy: float):
-        """Lưu trạng thái state lên Firebase để phục hồi chống mất dữ liệu"""
+        """Lưu state lên Firebase (kWh đã trừ offset + meta để khôi phục đúng sau khi tắt server)."""
         if not self.state_ref:
             return
-            
+
         try:
             now = datetime.now(TIMEZONE_GMT7)
             state_data = {
                 "last_energy": current_energy,
                 "monthly_start_energy": self.monthly_start_energy,
                 "daily_start_energy": self.daily_start_energy,
-                "last_date": now.strftime('%Y-%m-%d'),
+                "last_date": now.strftime("%Y-%m-%d"),
                 "last_month": now.month,
-                "last_updated": now.isoformat()
+                "last_updated": now.isoformat(),
+                "coord_version": STATE_COORD_VERSION,
+                "pzem_energy_offset_kwh": PZEM_ENERGY_OFFSET_KWH,
             }
             self.state_ref.update(state_data)
         except Exception as e:
@@ -126,23 +163,19 @@ class ElectricityProcessor:
             now = datetime.now(TIMEZONE_GMT7)
             today_str = now.strftime('%Y-%m-%d')
             
-            energy = float(data.get('energy', 0))
-            if energy < 0:
+            raw_energy = float(data.get("energy", 0))
+            if raw_energy < 0:
                 return
-            
-            # Logic: Khi PZEM tự reset (đầu tháng) -> energy tụt mạnh
-            if self.last_energy_reading is not None and energy < self.last_energy_reading * 0.5:
-                logger.info(f"PZEM Reset detected: energy from {self.last_energy_reading} -> {energy}")
-                self.monthly_start_energy = energy
-                self.daily_start_energy = energy
-            
+            energy = self._to_adjusted_kwh(raw_energy)
+
             if self.last_energy_reading is None:
                 self.daily_start_energy = energy
+                self.monthly_start_energy = energy
                 self.last_energy_reading = energy
 
-            # Tính toán tiêu thụ
-            monthly_consumption = max(0, energy - self.monthly_start_energy)
-            daily_consumption = max(0, energy - self.daily_start_energy)
+            # Tính toán tiêu thụ (energy & baseline trong DB đều là kWh sau offset)
+            monthly_consumption = max(0.0, energy - float(self.monthly_start_energy))
+            daily_consumption = max(0.0, energy - float(self.daily_start_energy))
             
             monthly_cost = calc_electricity_cost(monthly_consumption)
             
@@ -187,7 +220,10 @@ class ElectricityProcessor:
             if self.firebase_ref:
                 self.firebase_ref.child('daily_usage').child(today_str).set(daily_consumption)
             
-            logger.info(f"Updated Firebase: P={data.get('power')}W, E={energy}kWh, Daily={daily_consumption:.3f}kWh, Monthly={monthly_consumption:.3f}kWh")
+            logger.info(
+                f"Updated Firebase: P={data.get('power')}W, raw_E={raw_energy}kWh, adj_E={energy:.3f}kWh, "
+                f"Daily={daily_consumption:.3f}kWh, Monthly={monthly_consumption:.3f}kWh"
+            )
             
         except Exception as e:
             logger.error(f"Lỗi lưu Firebase: {e}")
