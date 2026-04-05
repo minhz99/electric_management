@@ -4,70 +4,45 @@
 #include <PZEM004Tv30.h>
 #include <ArduinoJson.h>
 
-// ===== WiFi Config =====
+// ===== Hằng số mạng (Sửa tại đây) =====
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
 
-// ===== MQTT Config =====
-const char* mqtt_server = "YOUR_MQTT_BROKER_IP";   // EMQX broker IP
+// ===== Hằng số MQTT (Sửa tại đây) =====
+// Đặt IP local của máy tính đang chạy Python Server
+const char* mqtt_server = "192.168.1.xxx";
 const int   mqtt_port   = 1883;
-const char* mqtt_pub_topic  = "YOUR_MQTT_PUB_TOPIC";      // Topic gửi dữ liệu
-const char* mqtt_sub_topic  = "YOUR_MQTT_SUB_TOPIC";  // Topic nhận lệnh
+const char* mqtt_pub_topic  = "testtopic/pzem004t";    // Khớp với Config trên server
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// ===== PZEM Config =====
+// ===== Firmware Setup PZEM =====
 // D7 = GPIO13 = RX, D6 = GPIO12 = TX
 SoftwareSerial pzemSWSerial(13, 12);
 PZEM004Tv30 pzem(pzemSWSerial);
 
 void setup_wifi() {
   WiFi.begin(ssid, password);
-  Serial.print("Dang ket noi WiFi");
+  Serial.print("Connecting WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi da ket noi!");
-  Serial.print("IP: ");
+  Serial.println("\n[+] WiFi Connected!");
+  Serial.print("[+] IP: ");
   Serial.println(WiFi.localIP());
-}
-
-// ===== Xử lý khi nhận tin nhắn MQTT =====
-void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Tin nhan MQTT nhan duoc [");
-  Serial.print(topic);
-  Serial.print("]: ");
-
-  String msg;
-  for (unsigned int i = 0; i < length; i++) {
-    msg += (char)payload[i];
-  }
-  Serial.println(msg);
-
-  // Parse JSON
-  StaticJsonDocument<128> doc;
-  DeserializationError error = deserializeJson(doc, msg);
-  if (!error) {
-    if (doc.containsKey("reset") && doc["reset"] == true) {
-      Serial.println(">>> RESET ENERGY <<<");
-      pzem.resetEnergy();
-      client.publish(mqtt_pub_topic, "{\"status\":\"energy reset\"}");
-    }
-  }
 }
 
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Dang ket noi MQTT...");
-    if (client.connect("ESP8266_PZEM")) {
-      Serial.println(" Da ket noi!");
-      client.subscribe(mqtt_sub_topic);  // Đăng ký topic lệnh
+    Serial.print("Connecting to local Broker...");
+    if (client.connect("ESP8266_HomeEnergy")) {
+      Serial.println(" [OK]");
     } else {
-      Serial.print(" Loi, rc=");
+      Serial.print(" [Fail] rc=");
       Serial.print(client.state());
-      Serial.println(" -> Thu lai sau 5s");
+      Serial.println(" -> Retrying in 5s");
       delay(5000);
     }
   }
@@ -76,15 +51,16 @@ void reconnect() {
 void setup() {
   Serial.begin(115200);
   setup_wifi();
+  
   client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(callback);
+  // Đoạn lệnh setCallback bị xoá đi do phiên bản nhẹ này chỉ chuyên Push, ko cần nhận lệnh reset cồng kềnh vì Database lo.
 }
 
 void loop() {
   if (!client.connected()) reconnect();
   client.loop();
 
-  // ===== Đọc dữ liệu từ PZEM =====
+  // Đọc PZEM V3
   float voltage = pzem.voltage();
   float current = pzem.current();
   float power   = pzem.power();
@@ -92,8 +68,9 @@ void loop() {
   float freq    = pzem.frequency();
   float pf      = pzem.pf();
 
-  // ===== JSON Payload =====
-  StaticJsonDocument<192> doc;
+  // Khởi tạo bộ nhớ Json siêu nhỏ, tự dọn rác
+  StaticJsonDocument<128> doc;
+  
   doc["voltage"]   = isnan(voltage) ? 0 : voltage;
   doc["current"]   = isnan(current) ? 0 : current;
   doc["power"]     = isnan(power)   ? 0 : power;
@@ -101,14 +78,13 @@ void loop() {
   doc["frequency"] = isnan(freq)    ? 0 : freq;
   doc["pf"]        = isnan(pf)      ? 0 : pf;
 
-  char payload[192];
+  char payload[128];
   serializeJson(doc, payload);
 
-  // Debug Serial
+  // In Serial debug & Publish
   Serial.println(payload);
-
-  // Gửi MQTT
   client.publish(mqtt_pub_topic, payload);
 
-  delay(5000); // gửi mỗi 5 giây
+  // Đẩy 5 giây/lần
+  delay(5000); 
 }

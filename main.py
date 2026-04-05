@@ -5,7 +5,11 @@ File chính để chạy hệ thống quản lý điện năng
 
 import logging
 import sys
+import asyncio
+import threading
+import time
 from processor import ElectricityProcessor
+from broker import start_mqtt_broker
 
 # Setup logging
 logging.basicConfig(
@@ -19,12 +23,33 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+async def amqtt_loop():
+    broker = await start_mqtt_broker()
+    if broker:
+        while True:
+            await asyncio.sleep(1)
+    else:
+        logger.error("Broker failed format.")
+
+def run_broker_thread():
+    """Khởi chạy AMQTT Broker trên luồng riêng"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(amqtt_loop())
+
 def main():
     """Hàm main chạy ứng dụng"""
     try:
-        logger.info("=== Khởi động hệ thống quản lý điện năng ===")
+        logger.info("=== Khởi động hệ thống quản lý điện năng All-In-One ===")
         
-        # Khởi tạo và chạy processor
+        # 1. Khởi chạy Local MQTT Broker
+        broker_thread = threading.Thread(target=run_broker_thread, daemon=True)
+        broker_thread.start()
+        
+        # Chờ Broker mở port 1883
+        time.sleep(2)
+        
+        # 2. Khởi tạo và chạy Processor (sẽ tự động connect vào 127.0.0.1:1883)
         processor = ElectricityProcessor()
         processor.run()
         
