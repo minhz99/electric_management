@@ -200,6 +200,7 @@ class ElectricityProcessor:
                     "consumption": {
                         "daily_kwh": daily_consumption,
                         "monthly_kwh": monthly_consumption,
+                        "total_kwh": energy, # Đây là giá trị đã trừ 3160
                         "daily_cost": daily_cost_value,
                         "monthly_cost": monthly_cost['total']
                     },
