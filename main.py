@@ -8,6 +8,8 @@ import sys
 import asyncio
 import threading
 import time
+import subprocess
+import os
 from processor import ElectricityProcessor
 from broker import start_mqtt_broker
 
@@ -37,6 +39,16 @@ def run_broker_thread():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(amqtt_loop())
 
+def start_web_frontend():
+    """Tự động chạy giao diện Web trên cổng 5535"""
+    frontend_path = os.path.join(os.path.dirname(__file__), 'kinetic-precision')
+    try:
+        logger.info("🚀 Đang khởi động giao diện Web trên cổng 5535...")
+        # Bắt đầu npm run dev trong background và redirect output để tránh làm rối log main
+        subprocess.Popen(["npm", "run", "dev"], cwd=frontend_path, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    except Exception as e:
+        logger.error(f"❌ Không thể chạy giao diện Web: {e}")
+
 def main():
     """Hàm main chạy ứng dụng"""
     try:
@@ -46,10 +58,13 @@ def main():
         broker_thread = threading.Thread(target=run_broker_thread, daemon=True)
         broker_thread.start()
         
-        # Chờ Broker mở port 1883
+        # 2. Khởi chạy Giao diện Web
+        start_web_frontend()
+        
+        # Chờ Broker và Web khởi động sơ bộ
         time.sleep(2)
         
-        # 2. Khởi tạo và chạy Processor (sẽ tự động connect vào 127.0.0.1:1883)
+        # 3. Khởi tạo và chạy Processor (sẽ tự động connect vào 127.0.0.1:1883)
         processor = ElectricityProcessor()
         processor.run()
         
