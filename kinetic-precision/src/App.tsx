@@ -63,39 +63,43 @@ function Stat({
   icon?: ReactNode;
 }) {
   return (
-    <div
-      className={cn(
-        'rounded-xl border px-4 py-3.5',
-        emphasis
-          ? 'border-primary/25 bg-primary text-on-primary'
-          : 'border-[var(--color-border)] bg-surface-elevated'
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
+    <div className={cn("stat-card flex flex-col justify-between group", emphasis && "emphasis")}>
+      <div className="flex items-center justify-between mb-4">
         <p
           className={cn(
-            'text-[11px] font-semibold uppercase tracking-wide',
-            emphasis ? 'text-on-primary/85' : 'text-on-surface-muted'
+            'text-xs font-semibold tracking-wider uppercase',
+            emphasis ? 'text-white/80' : 'text-on-surface-muted group-hover:text-primary transition-colors duration-300'
           )}
         >
           {label}
         </p>
-        {icon && <span className={emphasis ? 'text-on-primary/70' : 'text-on-surface-muted'}>{icon}</span>}
+        {icon && (
+          <div className={cn(
+            "p-2 rounded-full",
+            emphasis ? "bg-white/20 text-white" : "bg-primary/10 text-primary"
+          )}>
+            {icon}
+          </div>
+        )}
       </div>
-      <p className={cn('mt-1.5 font-headline text-xl font-bold tabular-nums', emphasis ? '' : 'text-on-surface')}>
-        {value}
-        {unit ? <span className="ml-1 text-sm font-semibold opacity-90">{unit}</span> : null}
-      </p>
+      <div className="flex items-baseline gap-1.5">
+        <span className={cn('text-3xl font-bold tracking-tight', emphasis ? '' : 'text-on-surface')}>
+          {value}
+        </span>
+        {unit && <span className={cn("text-sm font-medium", emphasis ? "text-white/80" : "text-on-surface-muted")}>{unit}</span>}
+      </div>
     </div>
   );
 }
 
 function ChartPanel({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <section className="panel p-5 md:p-6">
-      <div className="mb-4">
-        <h2 className="font-headline text-lg font-bold text-on-surface">{title}</h2>
-        {subtitle ? <p className="mt-0.5 text-sm text-on-surface-muted">{subtitle}</p> : null}
+    <section className="panel p-6 md:p-8">
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div>
+          <h2 className="font-headline text-xl font-bold text-on-surface">{title}</h2>
+          {subtitle && <p className="mt-1 text-[13px] text-on-surface-muted">{subtitle}</p>}
+        </div>
       </div>
       {children}
     </section>
@@ -339,8 +343,8 @@ export default function App() {
                 <AreaChart data={powerHistory}>
                   <defs>
                     <linearGradient id="gp" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#0f6cbd" stopOpacity={0.2} />
-                      <stop offset="100%" stopColor="#0f6cbd" stopOpacity={0} />
+                      <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.2} />
+                      <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--color-border)" />
@@ -353,7 +357,7 @@ export default function App() {
                       fontSize: '12px',
                     }}
                   />
-                  <Area type="monotone" dataKey="power" stroke="#0f6cbd" strokeWidth={2} fill="url(#gp)" />
+                  <Area type="monotone" dataKey="power" stroke="#3b82f6" strokeWidth={2} fill="url(#gp)" />
                 </AreaChart>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-on-surface-muted">
@@ -374,7 +378,7 @@ export default function App() {
                   <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '10px', fontSize: '12px' }} />
                   <Bar dataKey="value" name="kWh" radius={[6, 6, 0, 0]} maxBarSize={48}>
                     {dailyUsage.map((_, i) => (
-                      <Cell key={i} fill={i === dailyUsage.length - 1 ? '#0f6cbd' : '#0f6cbd44'} />
+                      <Cell key={i} fill={i === dailyUsage.length - 1 ? '#3b82f6' : '#3b82f644'} />
                     ))}
                   </Bar>
                 </BarChart>

@@ -40,14 +40,45 @@ def run_broker_thread():
     loop.run_until_complete(amqtt_loop())
 
 def start_web_frontend():
-    """Tự động chạy giao diện Web trên cổng 5535"""
+    """Tự động chạy giao diện Web trên cổng 5535 bằng Python HTTP Server (không chạy nền quá trình npm)"""
+    import http.server
+    import socketserver
+    
     frontend_path = os.path.join(os.path.dirname(__file__), 'kinetic-precision')
-    try:
-        logger.info("🚀 Đang khởi động giao diện Web trên cổng 5535...")
-        # Bắt đầu npm run dev trong background và redirect output để tránh làm rối log main
-        subprocess.Popen(["npm", "run", "dev"], cwd=frontend_path, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    except Exception as e:
-        logger.error(f"❌ Không thể chạy giao diện Web: {e}")
+    dist_path = os.path.join(frontend_path, 'dist')
+    
+    if not os.path.exists(dist_path):
+        logger.info("⚙️ Đang tiến hành đóng gói (build) ứng dụng React trong nền (chỉ chạy lần đầu)...")
+        try:
+            subprocess.run(["npm", "install"], cwd=frontend_path, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            subprocess.run(["npm", "run", "build"], cwd=frontend_path, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            logger.info("✅ Build giao diện web thành công!")
+        except Exception as e:
+            logger.error(f"❌ Lỗi khi đóng gói React: {e}")
+            return
+
+    PORT = 5535
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=dist_path, **kwargs)
+            
+        def log_message(self, format, *args):
+            pass # Tắt log HTTP của server tĩnh để console sạch sẽ hơn
+
+    class CustomTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    def run_server():
+        try:
+            with CustomTCPServer(("", PORT), Handler) as httpd:
+                logger.info(f"🚀 Khởi động trang quản lý tại: http://localhost:{PORT}")
+                httpd.serve_forever()
+        except Exception as e:
+            logger.error(f"❌ Lỗi port 5535: {e}")
+
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
 
 def main():
     """Hàm main chạy ứng dụng"""

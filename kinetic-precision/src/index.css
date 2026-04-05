@@ -1,38 +1,69 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-headline: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Outfit", ui-sans-serif, system-ui, sans-serif;
 
-  --color-primary: #0f6cbd;
+  --color-primary: #3b82f6;
   --color-on-primary: #ffffff;
-  --color-surface: #f0f4f8;
+  --color-surface: #f8fafc;
   --color-surface-elevated: #ffffff;
-  --color-on-surface: #1a1c1e;
-  --color-on-surface-muted: #5c6370;
-  --color-border: #dde3ea;
-  --color-ok: #1b5e20;
-  --color-ok-bg: #e8f5e9;
-  --color-warn: #b45309;
-  --color-warn-bg: #fff7ed;
-  --color-danger: #b3261e;
-  --color-danger-bg: #fce8e6;
+  --color-on-surface: #0f172a;
+  --color-on-surface-muted: #64748b;
+  --color-border: #e2e8f0;
+  
+  --color-ok: #059669;
+  --color-ok-bg: #d1fae5;
+  --color-warn: #ea580c;
+  --color-warn-bg: #ffedd5;
+  --color-danger: #dc2626;
+  --color-danger-bg: #fee2e2;
 }
 
 @layer base {
   body {
-    @apply bg-surface text-on-surface font-sans antialiased text-[15px] leading-normal;
+    @apply font-sans antialiased text-[15px] leading-relaxed;
+    background: radial-gradient(circle at top left, #ffffff 0%, #f1f5f9 100%);
+    background-attachment: fixed;
+    color: var(--color-on-surface);
   }
 }
 
 .page-shell {
   min-height: 100dvh;
-  background: var(--color-surface);
 }
 
 .panel {
-  @apply rounded-2xl border bg-surface-elevated;
-  border-color: color-mix(in srgb, var(--color-border) 90%, transparent);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  @apply rounded-[24px] bg-white/70 backdrop-blur-xl border border-white/60;
+  box-shadow: 0 10px 40px -10px rgba(0,0,0,0.04), inset 0 0 0 1px rgba(255,255,255,0.8);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.panel:hover {
+  box-shadow: 0 15px 50px -10px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(255,255,255,1);
+}
+
+.stat-card {
+  @apply relative overflow-hidden rounded-[20px] bg-white/80 backdrop-blur-md border border-white/50 p-5;
+  box-shadow: 0 4px 20px -2px rgba(0,0,0,0.03);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.stat-card:hover {
+  @apply border-white;
+  box-shadow: 0 10px 30px -5px rgba(59, 130, 246, 0.12);
+  transform: translateY(-2px);
+}
+
+.stat-card.emphasis {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: white;
+  border: border-transparent;
+  box-shadow: 0 10px 25px -5px rgba(37, 99, 235, 0.4);
+}
+
+.stat-card.emphasis:hover {
+  box-shadow: 0 15px 35px -5px rgba(37, 99, 235, 0.5);
+  transform: scale(1.02) translateY(-2px);
 }
