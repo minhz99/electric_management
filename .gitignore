@@ -181,3 +181,4 @@ cython_debug/
 .cursorindexingignore
 .DS_Store
 esp8266.cpp
+electric-management-2ce5c-default-rtdb-export.json
