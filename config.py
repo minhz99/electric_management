@@ -34,7 +34,7 @@ MONTH_START_DAY = 1         # Ngày bắt đầu của tháng (thường là 1)
 
 # PZEM: tổng kWh trên module không reset; offset = giá trị ghi khi bắt đầu theo dõi (ví dụ 3160).
 # State trên Firebase lưu kWh đã trừ offset (tọa độ "adjusted").
-PZEM_ENERGY_OFFSET_KWH = float(os.getenv("PZEM_ENERGY_OFFSET_KWH", "0"))
+PZEM_ENERGY_OFFSET_KWH = float(os.getenv("PZEM_ENERGY_OFFSET_KWH", "3160.0"))
 
 # MQTT Configuration
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
