@@ -1,0 +1,20 @@
+{
+  "rules": {
+    "realtime": {
+      ".read": true,
+      ".write": false
+    },
+    "history": {
+      ".read": true,
+      ".write": false
+    },
+    "daily_usage": {
+      ".read": true,
+      ".write": false
+    },
+    "state": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}

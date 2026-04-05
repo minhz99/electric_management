@@ -1,27 +1,58 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, type FirebaseOptions } from 'firebase/app';
 import { getDatabase } from 'firebase/database';
 
-// Cấu hình từ Firebase Console (Web app). Realtime Database URL thường có dạng:
-// https://<project-id>-default-rtdb.firebaseio.com
-// hoặc https://<project-id>-default-rtdb.<region>.firebasedatabase.app
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "YOUR_API_KEY",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "YOUR_PROJECT_ID.firebaseapp.com",
-  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || "https://YOUR_PROJECT_ID.firebaseio.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "YOUR_PROJECT_ID",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "YOUR_SENDER_ID",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "YOUR_APP_ID"
+/**
+ * Chỉ chấp nhận URL Realtime Database thật (HTTPS + host Firebase).
+ * Trùng với FIREBASE_DATABASE_URL phía Python / export JSON.
+ */
+function resolveDatabaseUrl(): string | null {
+  const raw = String(import.meta.env.VITE_FIREBASE_DATABASE_URL ?? '').trim();
+  if (!raw || raw.includes('YOUR_PROJECT')) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:') return null;
+    const h = u.hostname;
+    if (!h.endsWith('firebaseio.com') && !h.endsWith('firebasedatabase.app')) return null;
+    return raw.replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+export const firebaseDatabaseUrl = resolveDatabaseUrl();
+export const firebaseConfigured = Boolean(firebaseDatabaseUrl);
+
+/** Host hiển thị trên UI (không chứa API key). */
+export function getDatabaseHostLabel(): string {
+  if (!firebaseDatabaseUrl) return '—';
+  try {
+    return new URL(firebaseDatabaseUrl).hostname;
+  } catch {
+    return '—';
+  }
+}
+
+const placeholderConfig: FirebaseOptions = {
+  apiKey: 'unused',
+  authDomain: 'unused.firebaseapp.com',
+  databaseURL: 'https://unused-placeholder.firebaseio.com',
+  projectId: 'unused',
+  storageBucket: 'unused.appspot.com',
+  messagingSenderId: '0',
+  appId: '1:0:web:0',
 };
 
-export const firebaseConfigured =
-  Boolean(
-    import.meta.env.VITE_FIREBASE_DATABASE_URL &&
-      !String(import.meta.env.VITE_FIREBASE_DATABASE_URL).includes("YOUR_PROJECT_ID")
-  );
+const appConfig: FirebaseOptions = firebaseDatabaseUrl
+  ? {
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
+      databaseURL: firebaseDatabaseUrl,
+      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+      appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
+    }
+  : placeholderConfig;
 
-// Khởi tạo Firebase
-const app = initializeApp(firebaseConfig);
-
-// Khởi tạo Realtime Database
+const app = initializeApp(appConfig);
 export const db = getDatabase(app);

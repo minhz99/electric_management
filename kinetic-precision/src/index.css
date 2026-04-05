@@ -1,47 +1,38 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@400;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-headline: "Manrope", sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "DM Sans", ui-sans-serif, system-ui, sans-serif;
 
-  --color-primary: #005fb8;
-  --color-primary-container: #00458f;
+  --color-primary: #0f6cbd;
   --color-on-primary: #ffffff;
-  --color-surface: #f4f7fb;
-  --color-surface-container: #e8ecf2;
-  --color-surface-container-low: #eef2f7;
-  --color-surface-container-lowest: #ffffff;
-  --color-on-surface: #12161a;
-  --color-on-surface-variant: #4a5568;
-  --color-outline-variant: #c5ccd8;
-  --color-tertiary: #0d6b4a;
-  --color-error: #ba1a1a;
-  --color-accent-warm: #e85d04;
+  --color-surface: #f0f4f8;
+  --color-surface-elevated: #ffffff;
+  --color-on-surface: #1a1c1e;
+  --color-on-surface-muted: #5c6370;
+  --color-border: #dde3ea;
+  --color-ok: #1b5e20;
+  --color-ok-bg: #e8f5e9;
+  --color-warn: #b45309;
+  --color-warn-bg: #fff7ed;
+  --color-danger: #b3261e;
+  --color-danger-bg: #fce8e6;
 }
 
 @layer base {
   body {
-    @apply bg-surface text-on-surface font-sans antialiased;
+    @apply bg-surface text-on-surface font-sans antialiased text-[15px] leading-normal;
   }
 }
 
-.kinetic-grid {
-  background-color: var(--color-surface);
-  background-image:
-    radial-gradient(ellipse 120% 80% at 0% -20%, rgba(0, 95, 184, 0.12), transparent 50%),
-    radial-gradient(ellipse 100% 60% at 100% 0%, rgba(232, 93, 4, 0.06), transparent 45%),
-    radial-gradient(circle at 2px 2px, rgba(0, 95, 184, 0.06) 1px, transparent 0);
-  background-size: auto, auto, 24px 24px;
+.page-shell {
+  min-height: 100dvh;
+  background: var(--color-surface);
 }
 
-.app-header-blur {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(16px) saturate(1.2);
-  -webkit-backdrop-filter: blur(16px) saturate(1.2);
-}
-
-.glass-pill {
-  background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(24px);
+.panel {
+  @apply rounded-2xl border bg-surface-elevated;
+  border-color: color-mix(in srgb, var(--color-border) 90%, transparent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
 }
