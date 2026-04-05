@@ -181,3 +181,4 @@ cython_debug/
 .cursorindexingignore
 .DS_Store
 esp8266.cpp
+serviceAccountKey.json
