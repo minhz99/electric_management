@@ -561,7 +561,16 @@ export default function App() {
                       fontSize: '12px',
                     }}
                   />
-                  <Area type="monotone" dataKey="value" stroke={trend.stroke} strokeWidth={2} fill={`url(#${trend.fillId})`} />
+                  <Area 
+                    type="monotone" 
+                    dataKey="value" 
+                    stroke={trend.stroke} 
+                    strokeWidth={2} 
+                    fill={`url(#${trend.fillId})`} 
+                    isAnimationActive={true}
+                    animationDuration={1500}
+                    animationEasing="linear"
+                  />
                 </AreaChart>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-on-surface-muted">
