@@ -184,3 +184,4 @@ esp8266.cpp
 electric-management-2ce5c-default-rtdb-export.json
 serviceAccountKey.json
 FIX-esp8266.cpp
+frontend/config.js

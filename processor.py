@@ -11,6 +11,9 @@ import time
 from typing import Dict
 import schedule
 
+STATE_SAVE_INTERVAL_SEC = 300  # Lưu state tối đa mỗi 5 phút
+REALTIME_CHART_MAX_POINTS = 120  # Giữ tối đa 120 điểm trong /realtime_chart
+
 from config import (
     init_firebase,
     init_mqtt,
@@ -38,18 +41,20 @@ class ElectricityProcessor:
         self.state_ref = self.firebase_ref.child('state') if self.firebase_ref else None
         self.realtime_ref = self.firebase_ref.child('realtime') if self.firebase_ref else None
         self.history_ref = self.firebase_ref.child('history') if self.firebase_ref else None
-        
+        self.chart_ref = self.firebase_ref.child('realtime_chart') if self.firebase_ref else None
+
         self.last_energy_reading = None
         self.monthly_start_energy = None
         self.daily_start_energy = None
-        
+
         self.last_save_hour = -1
-        
+        self.last_state_save_time = 0.0  # throttle: save state tối đa mỗi 5 phút
+
         # Khởi tạo giá trị ban đầu từ Firebase
         self._initialize_energy_baseline()
-        
+
         schedule.every().day.at(DAILY_RESET_TIME).do(self._reset_daily_and_monthly_baselines)
-        
+
         logger.info("Đã khởi tạo ElectricityProcessor.")
     
     @staticmethod
@@ -119,14 +124,16 @@ class ElectricityProcessor:
         if now.day == MONTH_START_DAY:
             self.monthly_start_energy = self.last_energy_reading
             logger.info(f"Đầu tháng — baseline tháng = {self.monthly_start_energy} kWh (đã trừ offset)")
-        self._save_state(self.last_energy_reading)
+        self._save_state(self.last_energy_reading, force=True)
         logger.info(f"Đầu ngày — baseline ngày = {self.daily_start_energy} kWh (đã trừ offset)")
 
-    def _save_state(self, current_energy: float):
-        """Lưu state lên Firebase (kWh đã trừ offset + meta để khôi phục đúng sau khi tắt server)."""
+    def _save_state(self, current_energy: float, force: bool = False):
+        """Lưu state lên Firebase, throttle tối đa mỗi STATE_SAVE_INTERVAL_SEC giây."""
         if not self.state_ref:
             return
-
+        now_ts = time.monotonic()
+        if not force and (now_ts - self.last_state_save_time) < STATE_SAVE_INTERVAL_SEC:
+            return
         try:
             now = datetime.now(TIMEZONE_GMT7)
             state_data = {
@@ -140,8 +147,28 @@ class ElectricityProcessor:
                 "pzem_energy_offset_kwh": PZEM_ENERGY_OFFSET_KWH,
             }
             self.state_ref.update(state_data)
+            self.last_state_save_time = now_ts
         except Exception as e:
             logger.error(f"Lỗi ghi state lên Firebase: {e}")
+
+    def _push_realtime_chart(self, power_w: float, now: datetime):
+        """Thêm 1 điểm vào /realtime_chart, giữ tối đa REALTIME_CHART_MAX_POINTS."""
+        if not self.chart_ref:
+            return
+        try:
+            # Dùng timestamp ISO làm key (sắp xếp được)
+            key = now.strftime("%Y%m%dT%H%M%S")
+            self.chart_ref.child(key).set({
+                "time": now.isoformat(),
+                "power": round(power_w, 1),
+            })
+            # Xóa điểm cũ nếu vượt giới hạn
+            all_keys = sorted((self.chart_ref.get() or {}).keys())
+            excess = len(all_keys) - REALTIME_CHART_MAX_POINTS
+            for k in all_keys[:max(0, excess)]:
+                self.chart_ref.child(k).delete()
+        except Exception as e:
+            logger.warning(f"Lỗi push realtime_chart: {e}")
 
     def process_mqtt_message(self, client, userdata, message):
         """Xử lý tin nhắn MQTT từ ESP8266"""
@@ -185,45 +212,48 @@ class ElectricityProcessor:
             daily_cost_value = monthly_cost['total'] - yesterday_cost['total']
             
             self.last_energy_reading = energy
-            self._save_state(energy)
-            
-            # 2. Lưu lên Node Realtime Firebase
+            self._save_state(energy)  # throttled — tự động bỏ qua nếu chưa đủ 5 phút
+
+            power_w = float(data.get('power', 0))
+
+            # 1. Realtime node (luôn cập nhật)
             if self.realtime_ref:
-                realtime_data = {
+                self.realtime_ref.set({
                     "metrics": {
-                        "voltage": float(data.get('voltage', 0)),
-                        "current": float(data.get('current', 0)),
-                        "power": float(data.get('power', 0)),
+                        "voltage":   float(data.get('voltage', 0)),
+                        "current":   float(data.get('current', 0)),
+                        "power":     power_w,
                         "frequency": float(data.get('frequency', 0)),
-                        "pf": float(data.get('pf', 0))
+                        "pf":        float(data.get('pf', 0)),
                     },
                     "consumption": {
-                        "daily_kwh": daily_consumption,
-                        "monthly_kwh": monthly_consumption,
-                        "total_kwh": energy, # Đây là giá trị đã trừ 3160
-                        "daily_cost": daily_cost_value,
-                        "monthly_cost": monthly_cost['total']
+                        "daily_kwh":    daily_consumption,
+                        "monthly_kwh":  monthly_consumption,
+                        "total_kwh":    energy,
+                        "daily_cost":   daily_cost_value,
+                        "monthly_cost": monthly_cost['total'],
                     },
-                    "timestamp": now.isoformat()
-                }
-                self.realtime_ref.set(realtime_data)
-            
-            # 3. Lưu lịch sử mỗi giờ 1 lần 
+                    "timestamp": now.isoformat(),
+                })
+
+            # 2. Realtime chart (mỗi MQTT message = 1 điểm)
+            self._push_realtime_chart(power_w, now)
+
+            # 3. Lịch sử theo giờ
             if self.history_ref and now.hour != self.last_save_hour:
                 hour_str = f"{now.hour:02d}:00"
                 self.history_ref.child(today_str).child(hour_str).set({
-                    "power": float(data.get('power', 0)),
-                    "energy_accumulated": daily_consumption
+                    "power": power_w,
+                    "energy_accumulated": daily_consumption,
                 })
                 self.last_save_hour = now.hour
 
-            # Lưu daily_usage cho chart
+            # 4. Daily usage cho bar chart
             if self.firebase_ref:
                 self.firebase_ref.child('daily_usage').child(today_str).set(daily_consumption)
-            
+
             logger.info(
-                f"Updated Firebase: P={data.get('power')}W, raw_E={raw_energy}kWh, adj_E={energy:.3f}kWh, "
-                f"Daily={daily_consumption:.3f}kWh, Monthly={monthly_consumption:.3f}kWh"
+                f"P={power_w}W  adj_E={energy:.3f}kWh  Daily={daily_consumption:.3f}kWh  Monthly={monthly_consumption:.3f}kWh"
             )
             
         except Exception as e:

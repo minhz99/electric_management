@@ -1,106 +1,104 @@
 # main.py
 """
-File chính để chạy hệ thống quản lý điện năng
+File chính để chạy hệ thống quản lý điện năng.
+Serve giao diện web tĩnh (frontend/) và chạy MQTT broker + processor.
 """
 
 import logging
+import logging.handlers
 import sys
 import asyncio
 import threading
 import time
-import subprocess
 import os
 from processor import ElectricityProcessor
 from broker import start_mqtt_broker
 
-# Setup logging
+# ── Logging ──────────────────────────────────────────────────────────────────
+# RotatingFileHandler: tối đa 5 MB × 3 file backup → không phình log không giới hạn
+_log_handler_file = logging.handlers.RotatingFileHandler(
+    'electricity_management.log', maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8'
+)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('electricity_management.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    handlers=[_log_handler_file, logging.StreamHandler(sys.stdout)]
 )
-
 logger = logging.getLogger(__name__)
 
-async def amqtt_loop():
+# ── MQTT Broker (amqtt, chạy trên thread riêng) ───────────────────────────────
+async def _amqtt_loop():
     broker = await start_mqtt_broker()
     if broker:
         while True:
-            await asyncio.sleep(1)
-    else:
-        logger.error("Broker failed format.")
+            await asyncio.sleep(60)
 
-def run_broker_thread():
-    """Khởi chạy AMQTT Broker trên luồng riêng"""
+def _run_broker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(amqtt_loop())
+    loop.run_until_complete(_amqtt_loop())
 
-def start_web_frontend():
-    """Tự động chạy giao diện Web trên cổng 5535 bằng Python HTTP Server (không chạy nền quá trình npm)"""
+# ── Static file server ────────────────────────────────────────────────────────
+def start_web_server(port: int = 5535):
+    """Serve thư mục frontend/ bằng Python HTTP server thuần."""
     import http.server
     import socketserver
-    
-    frontend_path = os.path.join(os.path.dirname(__file__), 'kinetic-precision')
-    dist_path = os.path.join(frontend_path, 'dist')
-    
-    if not os.path.exists(dist_path):
-        logger.info("⚙️ Đang tiến hành đóng gói (build) ứng dụng React trong nền (chỉ chạy lần đầu)...")
-        try:
-            subprocess.run(["npm", "install"], cwd=frontend_path, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            subprocess.run(["npm", "run", "build"], cwd=frontend_path, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            logger.info("✅ Build giao diện web thành công!")
-        except Exception as e:
-            logger.error(f"❌ Lỗi khi đóng gói React: {e}")
-            return
 
-    PORT = 5535
+    root = os.path.join(os.path.dirname(__file__), 'frontend')
+    if not os.path.isdir(root):
+        logger.error(f"Không tìm thấy thư mục frontend/: {root}")
+        return
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, directory=dist_path, **kwargs)
-            
-        def log_message(self, format, *args):
-            pass # Tắt log HTTP của server tĩnh để console sạch sẽ hơn
+            super().__init__(*args, directory=root, **kwargs)
 
-    class CustomTCPServer(socketserver.TCPServer):
+        def end_headers(self):
+            # Cache-Control: cho phép browser / CDN cache file tĩnh; không cache HTML
+            path = self.path.split('?')[0]
+            if path.endswith(('.js', '.css', '.png', '.ico', '.woff2')):
+                self.send_header('Cache-Control', 'public, max-age=86400')
+            else:
+                self.send_header('Cache-Control', 'no-cache')
+            # CORS: cho phép Cloudflare tunnel và các host khác
+            self.send_header('Access-Control-Allow-Origin', '*')
+            super().end_headers()
+
+        def log_message(self, *_):
+            pass  # Tắt HTTP access log (console sạch hơn)
+
+    class ReuseServer(socketserver.TCPServer):
         allow_reuse_address = True
 
-    def run_server():
+    def _serve():
         try:
-            with CustomTCPServer(("", PORT), Handler) as httpd:
-                logger.info(f"🚀 Khởi động trang quản lý tại: http://localhost:{PORT}")
+            with ReuseServer(('0.0.0.0', port), Handler) as httpd:
+                logger.info(f"🌐 Giao diện web: http://localhost:{port}  (LAN: http://<IP>:{port})")
                 httpd.serve_forever()
         except Exception as e:
-            logger.error(f"❌ Lỗi port 5535: {e}")
+            logger.error(f"❌ Lỗi web server: {e}")
 
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
+    threading.Thread(target=_serve, daemon=True, name='web-server').start()
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 def main():
-    """Hàm main chạy ứng dụng"""
+    logger.info("=== Khởi động Electric Management ===")
+
+    # 1. MQTT Broker
+    threading.Thread(target=_run_broker, daemon=True, name='mqtt-broker').start()
+
+    # 2. Web server
+    start_web_server()
+
+    # Chờ broker sẵn sàng
+    time.sleep(2)
+
+    # 3. Processor (blocking — chiếm luồng chính)
     try:
-        logger.info("=== Khởi động hệ thống quản lý điện năng All-In-One ===")
-        
-        # 1. Khởi chạy Local MQTT Broker
-        broker_thread = threading.Thread(target=run_broker_thread, daemon=True)
-        broker_thread.start()
-        
-        # 2. Khởi chạy Giao diện Web
-        start_web_frontend()
-        
-        # Chờ Broker và Web khởi động sơ bộ
-        time.sleep(2)
-        
-        # 3. Khởi tạo và chạy Processor (sẽ tự động connect vào 127.0.0.1:1883)
         processor = ElectricityProcessor()
         processor.run()
-        
     except KeyboardInterrupt:
-        logger.info("Hệ thống đã được dừng bởi người dùng")
+        logger.info("Đã dừng bởi người dùng.")
     except Exception as e:
         logger.error(f"Lỗi nghiêm trọng: {e}")
         sys.exit(1)
