@@ -156,17 +156,21 @@ class ElectricityProcessor:
         if not self.chart_ref:
             return
         try:
-            # Dùng timestamp ISO làm key (sắp xếp được)
-            key = now.strftime("%Y%m%dT%H%M%S")
-            self.chart_ref.child(key).set({
+            # Miliseconds key - Cực kỳ quan trọng để Frontend vẽ mượt
+            timestamp_ms = int(now.timestamp() * 1000)
+            self.chart_ref.child(str(timestamp_ms)).set({
                 "time": now.isoformat(),
                 "power": round(power_w, 1),
             })
-            # Xóa điểm cũ nếu vượt giới hạn
-            all_keys = sorted((self.chart_ref.get() or {}).keys())
-            excess = len(all_keys) - REALTIME_CHART_MAX_POINTS
-            for k in all_keys[:max(0, excess)]:
-                self.chart_ref.child(k).delete()
+            
+            # Cleanup - chỉ giữ lại 120 điểm gần nhất
+            # Chạy cleanup mỗi 10 record để giảm tải Firebase
+            if timestamp_ms % 10 == 0:
+                snap = self.chart_ref.get()
+                if snap and len(snap) > REALTIME_CHART_MAX_POINTS:
+                    keys = sorted(snap.keys())
+                    for k in keys[:-REALTIME_CHART_MAX_POINTS]:
+                        self.chart_ref.child(k).delete()
         except Exception as e:
             logger.warning(f"Lỗi push realtime_chart: {e}")
 
