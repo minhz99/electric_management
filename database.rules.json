@@ -8,6 +8,10 @@
       ".read": true,
       ".write": false
     },
+    "power_recent": {
+      ".read": true,
+      ".write": false
+    },
     "daily_usage": {
       ".read": true,
       ".write": false

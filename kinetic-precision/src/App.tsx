@@ -3,48 +3,55 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Activity, AlertCircle, CheckCircle2, Database, Loader2, Wallet, Zap } from 'lucide-react';
-import {
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  Cell,
-} from 'recharts';
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { ref, onValue, query, orderByKey, limitToLast } from 'firebase/database';
+import { limitToLast, onValue, orderByKey, query, ref } from 'firebase/database';
 import { db, firebaseConfigured, getDatabaseHostLabel } from './firebase';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-function todayKeyVietnam(): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
-}
-
 const EMPTY_METRICS = { voltage: 0, current: 0, power: 0, frequency: 0, pf: 0 };
 const EMPTY_CONSUMPTION = { daily_kwh: 0, monthly_kwh: 0, total_kwh: 0, daily_cost: 0, monthly_cost: 0 };
-const MAX_LIVE_POINTS = 120;
-type DayHistoryMap = Record<string, { power?: number }>;
-type LiveChartPoint = { time: string; power: number };
 
-function normalizeRealtime(raw: unknown): {
+const RANGE_OPTIONS = [
+  { key: 'hour', label: 'Giờ' },
+  { key: 'day', label: 'Ngày' },
+  { key: 'month', label: 'Tháng' },
+  { key: 'year', label: 'Năm' },
+  { key: 'all', label: 'All' },
+] as const;
+
+type ChartRange = (typeof RANGE_OPTIONS)[number]['key'];
+type RealtimeState = {
   metrics: typeof EMPTY_METRICS;
   consumption: typeof EMPTY_CONSUMPTION;
   timestamp: string | null;
-} {
+};
+type RecentPowerPoint = { iso: string; power: number };
+type HourlyPoint = { iso: string; powerKw: number };
+type DailyUsagePoint = { dateKey: string; value: number };
+type TrendPoint = { label: string; value: number; tooltipLabel: string };
+type TrendModel = {
+  points: TrendPoint[];
+  subtitle: string;
+  emptyMessage: string;
+  seriesLabel: string;
+  stroke: string;
+  fillId: string;
+  yTickFormatter: (value: number) => string;
+  tooltipValueFormatter: (value: number) => string;
+};
+
+function normalizeRealtime(raw: unknown): RealtimeState {
   const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const m = o.metrics && typeof o.metrics === 'object' ? (o.metrics as Record<string, number>) : {};
-  const c =
-    o.consumption && typeof o.consumption === 'object' ? (o.consumption as Record<string, number>) : {};
+  const c = o.consumption && typeof o.consumption === 'object' ? (o.consumption as Record<string, number>) : {};
+
   return {
     metrics: { ...EMPTY_METRICS, ...m },
     consumption: { ...EMPTY_CONSUMPTION, ...c },
@@ -52,13 +59,174 @@ function normalizeRealtime(raw: unknown): {
   };
 }
 
-function normalizeDayHistory(dayHistory: DayHistoryMap): { time: string; power: number }[] {
-  return Object.keys(dayHistory)
+function formatDateTime(iso: string, options: Intl.DateTimeFormatOptions): string {
+  return new Date(iso).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', ...options });
+}
+
+function parseDailyUsage(raw: unknown): DailyUsagePoint[] {
+  const usageMap = raw && typeof raw === 'object' ? (raw as Record<string, number>) : {};
+  return Object.keys(usageMap)
     .sort()
-    .map((time) => {
-      const p = dayHistory[time]?.power ?? 0;
-      return { time, power: +(p / 1000).toFixed(2) };
-    });
+    .map((dateKey) => ({
+      dateKey,
+      value: +Number(usageMap[dateKey]).toFixed(3),
+    }));
+}
+
+function parseHourlyHistory(raw: unknown): HourlyPoint[] {
+  const historyMap = raw && typeof raw === 'object' ? (raw as Record<string, Record<string, { power?: number }>>) : {};
+
+  return Object.keys(historyMap)
+    .sort()
+    .flatMap((dateKey) =>
+      Object.keys(historyMap[dateKey] || {})
+        .sort()
+        .map((hourKey) => ({
+          iso: `${dateKey}T${hourKey}:00+07:00`,
+          powerKw: +(((historyMap[dateKey]?.[hourKey]?.power ?? 0) as number) / 1000).toFixed(2),
+        })),
+    );
+}
+
+function parseRecentPower(raw: unknown): RecentPowerPoint[] {
+  const recentMap = raw && typeof raw === 'object' ? (raw as Record<string, { time?: string; power?: number }>) : {};
+  return Object.keys(recentMap)
+    .sort()
+    .map((key) => ({
+      iso: String(recentMap[key]?.time || ''),
+      power: +Number(recentMap[key]?.power ?? 0).toFixed(1),
+    }))
+    .filter((point) => point.iso);
+}
+
+function aggregateMonthly(points: DailyUsagePoint[]): TrendPoint[] {
+  const totals = new Map<string, number>();
+  for (const point of points) {
+    const monthKey = point.dateKey.slice(0, 7);
+    totals.set(monthKey, (totals.get(monthKey) || 0) + point.value);
+  }
+
+  return Array.from(totals.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([monthKey, value]) => ({
+      label: `${monthKey.slice(5, 7)}/${monthKey.slice(2, 4)}`,
+      tooltipLabel: `Tháng ${monthKey.slice(5, 7)}/${monthKey.slice(0, 4)}`,
+      value: +value.toFixed(2),
+    }));
+}
+
+function aggregateYearly(points: DailyUsagePoint[]): TrendPoint[] {
+  const totals = new Map<string, number>();
+  for (const point of points) {
+    const yearKey = point.dateKey.slice(0, 4);
+    totals.set(yearKey, (totals.get(yearKey) || 0) + point.value);
+  }
+
+  return Array.from(totals.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([yearKey, value]) => ({
+      label: yearKey,
+      tooltipLabel: `Năm ${yearKey}`,
+      value: +value.toFixed(2),
+    }));
+}
+
+function buildTrendModel(range: ChartRange, recentPower: RecentPowerPoint[], hourlyHistory: HourlyPoint[], dailyUsage: DailyUsagePoint[]): TrendModel {
+  switch (range) {
+    case 'hour':
+      return {
+        points: recentPower.map((point) => ({
+          label: formatDateTime(point.iso, { hour: '2-digit', minute: '2-digit' }),
+          tooltipLabel: formatDateTime(point.iso, {
+            day: '2-digit',
+            month: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          }),
+          value: point.power,
+        })),
+        subtitle: '60 phút gần nhất · công suất tức thời · đơn vị W',
+        emptyMessage: 'Chưa có dữ liệu 60 phút gần nhất ở nhánh power_recent',
+        seriesLabel: 'Công suất',
+        stroke: '#0ea5e9',
+        fillId: 'trend-hour',
+        yTickFormatter: (value) => `${Math.round(value)}W`,
+        tooltipValueFormatter: (value) => `${value.toFixed(1)} W`,
+      };
+    case 'day': {
+      const last24Hours = hourlyHistory.slice(-24);
+      return {
+        points: last24Hours.map((point) => ({
+          label: formatDateTime(point.iso, { day: '2-digit', month: '2-digit', hour: '2-digit' }),
+          tooltipLabel: formatDateTime(point.iso, {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          value: point.powerKw,
+        })),
+        subtitle: '24 giờ gần nhất · công suất theo từng giờ · đơn vị kW',
+        emptyMessage: 'Chưa có đủ dữ liệu nhánh history cho 24 giờ gần nhất',
+        seriesLabel: 'Công suất',
+        stroke: '#2563eb',
+        fillId: 'trend-day',
+        yTickFormatter: (value) => `${value.toFixed(1)}kW`,
+        tooltipValueFormatter: (value) => `${value.toFixed(2)} kW`,
+      };
+    }
+    case 'month': {
+      const last30Days = dailyUsage.slice(-30);
+      return {
+        points: last30Days.map((point) => ({
+          label: `${point.dateKey.slice(8, 10)}/${point.dateKey.slice(5, 7)}`,
+          tooltipLabel: point.dateKey,
+          value: +point.value.toFixed(2),
+        })),
+        subtitle: '30 ngày gần nhất · điện năng theo ngày · đơn vị kWh',
+        emptyMessage: 'Chưa có dữ liệu daily_usage cho 30 ngày gần nhất',
+        seriesLabel: 'Điện năng',
+        stroke: '#7c3aed',
+        fillId: 'trend-month',
+        yTickFormatter: (value) => `${value.toFixed(1)}kWh`,
+        tooltipValueFormatter: (value) => `${value.toFixed(2)} kWh`,
+      };
+    }
+    case 'year': {
+      const last366Days = dailyUsage.slice(-366);
+      return {
+        points: aggregateMonthly(last366Days).slice(-12),
+        subtitle: '12 tháng gần nhất · điện năng gộp theo tháng · đơn vị kWh',
+        emptyMessage: 'Chưa có dữ liệu đủ dài để gộp 12 tháng gần nhất',
+        seriesLabel: 'Điện năng',
+        stroke: '#9333ea',
+        fillId: 'trend-year',
+        yTickFormatter: (value) => `${value.toFixed(0)}kWh`,
+        tooltipValueFormatter: (value) => `${value.toFixed(2)} kWh`,
+      };
+    }
+    case 'all':
+    default: {
+      const monthly = aggregateMonthly(dailyUsage);
+      const points = monthly.length <= 24 ? monthly : aggregateYearly(dailyUsage);
+      const byYear = monthly.length > 24;
+
+      return {
+        points,
+        subtitle: byYear
+          ? 'Toàn bộ lịch sử · điện năng gộp theo năm · đơn vị kWh'
+          : 'Toàn bộ lịch sử · điện năng gộp theo tháng · đơn vị kWh',
+        emptyMessage: 'Chưa có dữ liệu lịch sử trong nhánh daily_usage',
+        seriesLabel: 'Điện năng',
+        stroke: '#c026d3',
+        fillId: 'trend-all',
+        yTickFormatter: (value) => `${value.toFixed(0)}kWh`,
+        tooltipValueFormatter: (value) => `${value.toFixed(2)} kWh`,
+      };
+    }
+  }
 }
 
 function Stat({
@@ -75,43 +243,49 @@ function Stat({
   icon?: ReactNode;
 }) {
   return (
-    <div className={cn("stat-card flex flex-col justify-between group", emphasis && "emphasis")}>
-      <div className="flex items-center justify-between mb-4">
+    <div className={cn('stat-card flex flex-col justify-between group', emphasis && 'emphasis')}>
+      <div className="mb-4 flex items-center justify-between">
         <p
           className={cn(
             'text-xs font-semibold tracking-wider uppercase',
-            emphasis ? 'text-white/80' : 'text-on-surface-muted group-hover:text-primary transition-colors duration-300'
+            emphasis ? 'text-white/80' : 'text-on-surface-muted transition-colors duration-300 group-hover:text-primary',
           )}
         >
           {label}
         </p>
-        {icon && (
-          <div className={cn(
-            "p-2 rounded-full",
-            emphasis ? "bg-white/20 text-white" : "bg-primary/10 text-primary"
-          )}>
+        {icon ? (
+          <div className={cn('rounded-full p-2', emphasis ? 'bg-white/20 text-white' : 'bg-primary/10 text-primary')}>
             {icon}
           </div>
-        )}
+        ) : null}
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className={cn('text-3xl font-bold tracking-tight', emphasis ? '' : 'text-on-surface')}>
-          {value}
-        </span>
-        {unit && <span className={cn("text-sm font-medium", emphasis ? "text-white/80" : "text-on-surface-muted")}>{unit}</span>}
+        <span className={cn('text-3xl font-bold tracking-tight', emphasis ? '' : 'text-on-surface')}>{value}</span>
+        {unit ? <span className={cn('text-sm font-medium', emphasis ? 'text-white/80' : 'text-on-surface-muted')}>{unit}</span> : null}
       </div>
     </div>
   );
 }
 
-function ChartPanel({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+function ChartPanel({
+  title,
+  subtitle,
+  actions,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <section className="panel p-6 md:p-8">
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div className="mb-6 flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
         <div>
           <h2 className="font-headline text-xl font-bold text-on-surface">{title}</h2>
-          {subtitle && <p className="mt-1 text-[13px] text-on-surface-muted">{subtitle}</p>}
+          {subtitle ? <p className="mt-1 text-[13px] text-on-surface-muted">{subtitle}</p> : null}
         </div>
+        {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
       </div>
       {children}
     </section>
@@ -119,150 +293,78 @@ function ChartPanel({ title, subtitle, children }: { title: string; subtitle?: s
 }
 
 export default function App() {
-  const [todayKey, setTodayKey] = useState(todayKeyVietnam());
-  const [realtimeData, setRealtimeData] = useState({
+  const [realtimeData, setRealtimeData] = useState<RealtimeState>({
     metrics: EMPTY_METRICS,
     consumption: EMPTY_CONSUMPTION,
-    timestamp: null as string | null,
+    timestamp: null,
   });
-  const [livePower, setLivePower] = useState<LiveChartPoint[]>([]);
-  const [powerHistory, setPowerHistory] = useState<{ time: string; power: number }[]>([]);
-  const [historyChartDay, setHistoryChartDay] = useState<string | null>(null);
-  const [dailyUsage, setDailyUsage] = useState<{ day: string; value: number }[]>([]);
+  const [recentPower, setRecentPower] = useState<RecentPowerPoint[]>([]);
+  const [hourlyHistory, setHourlyHistory] = useState<HourlyPoint[]>([]);
+  const [dailyUsage, setDailyUsage] = useState<DailyUsagePoint[]>([]);
+  const [selectedRange, setSelectedRange] = useState<ChartRange>('day');
 
   const [socketConnected, setSocketConnected] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const [connectTimeout, setConnectTimeout] = useState(false);
 
   useEffect(() => {
-    const syncTodayKey = () => {
-      const next = todayKeyVietnam();
-      setTodayKey((prev) => (prev === next ? prev : next));
-    };
-
-    syncTodayKey();
-    const id = window.setInterval(syncTodayKey, 60_000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
     if (!firebaseConfigured) return;
 
     const onDenied = (err: Error) => setReadError(err.message);
-    let todayHistory: DayHistoryMap | null = null;
-    let fallbackHistory: { dayKey: string; values: DayHistoryMap } | null = null;
 
-    const syncHistoryChart = () => {
-      if (todayHistory && Object.keys(todayHistory).length > 0) {
-        setHistoryChartDay(todayKey);
-        setPowerHistory(normalizeDayHistory(todayHistory));
-        return;
-      }
+    const unsubSocket = onValue(ref(db, '.info/connected'), (snap) => setSocketConnected(snap.val() === true), onDenied);
 
-      if (fallbackHistory) {
-        setHistoryChartDay(fallbackHistory.dayKey);
-        setPowerHistory(normalizeDayHistory(fallbackHistory.values));
-        return;
-      }
-
-      setHistoryChartDay(null);
-      setPowerHistory([]);
-    };
-
-    const unsubSocket = onValue(
-      ref(db, '.info/connected'),
-      (snap) => setSocketConnected(snap.val() === true),
-      onDenied
-    );
-
-    const unsubRt = onValue(
+    const unsubRealtime = onValue(
       ref(db, 'realtime'),
       (snapshot) => {
-        if (!snapshot.exists()) return;
-        const nextRealtime = normalizeRealtime(snapshot.val());
-        setRealtimeData(nextRealtime);
-
-        if (!nextRealtime.timestamp) return;
-
-        const timeLabel = new Date(nextRealtime.timestamp).toLocaleTimeString('vi-VN', {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          timeZone: 'Asia/Ho_Chi_Minh',
-        });
-        const point = {
-          time: timeLabel,
-          power: +nextRealtime.metrics.power.toFixed(1),
-        };
-
-        setLivePower((prev) => {
-          const last = prev[prev.length - 1];
-          if (last && last.time === point.time && last.power === point.power) return prev;
-          return [...prev, point].slice(-MAX_LIVE_POINTS);
-        });
+        if (snapshot.exists()) setRealtimeData(normalizeRealtime(snapshot.val()));
       },
-      onDenied
+      onDenied,
     );
 
-    const unsubTodayHistory = onValue(
-      ref(db, `history/${todayKey}`),
+    const unsubRecentPower = onValue(
+      query(ref(db, 'power_recent'), orderByKey(), limitToLast(720)),
       (snapshot) => {
-        todayHistory = snapshot.exists() ? (snapshot.val() as DayHistoryMap) : null;
-        syncHistoryChart();
+        setRecentPower(snapshot.exists() ? parseRecentPower(snapshot.val()) : []);
       },
-      onDenied
+      onDenied,
     );
 
-    const unsubLatestHistory = onValue(
-      query(ref(db, 'history'), orderByKey(), limitToLast(1)),
+    const unsubHistory = onValue(
+      query(ref(db, 'history'), orderByKey(), limitToLast(2)),
       (snapshot) => {
-        if (snapshot.exists()) {
-          const latest = Object.entries(snapshot.val() as Record<string, DayHistoryMap>).at(0);
-          fallbackHistory = latest ? { dayKey: latest[0], values: latest[1] } : null;
-        } else {
-          fallbackHistory = null;
-        }
-        syncHistoryChart();
+        setHourlyHistory(snapshot.exists() ? parseHourlyHistory(snapshot.val()) : []);
       },
-      onDenied
+      onDenied,
     );
 
     const unsubUsage = onValue(
-      query(ref(db, 'daily_usage'), orderByKey(), limitToLast(7)),
+      query(ref(db, 'daily_usage'), orderByKey()),
       (snapshot) => {
-        if (snapshot.exists()) {
-          const usageMap = snapshot.val() as Record<string, number>;
-          setDailyUsage(
-            Object.keys(usageMap)
-              .sort()
-              .map((date) => ({
-                day: date.substring(5),
-                value: +Number(usageMap[date]).toFixed(2),
-              }))
-          );
-        } else setDailyUsage([]);
+        setDailyUsage(snapshot.exists() ? parseDailyUsage(snapshot.val()) : []);
       },
-      onDenied
+      onDenied,
     );
 
-    const t = window.setTimeout(() => {
+    const timeoutId = window.setTimeout(() => {
       setConnectTimeout(true);
     }, 10000);
 
     return () => {
-      window.clearTimeout(t);
+      window.clearTimeout(timeoutId);
       unsubSocket();
-      unsubRt();
-      unsubTodayHistory();
-      unsubLatestHistory();
+      unsubRealtime();
+      unsubRecentPower();
+      unsubHistory();
       unsubUsage();
     };
-  }, [todayKey]);
+  }, []);
+
+  const trend = buildTrendModel(selectedRange, recentPower, hourlyHistory, dailyUsage);
 
   const lastUpdated =
     realtimeData.timestamp &&
-    new Date(realtimeData.timestamp).toLocaleString('vi-VN', {
-      timeZone: 'Asia/Ho_Chi_Minh',
+    formatDateTime(realtimeData.timestamp, {
       day: '2-digit',
       month: '2-digit',
       year: 'numeric',
@@ -292,7 +394,7 @@ export default function App() {
             </span>
             <div>
               <h1 className="font-headline text-lg font-bold tracking-tight text-on-surface">Điện năng</h1>
-              <p className="text-xs text-on-surface-muted">Theo dõi theo dữ liệu Firebase RTDB</p>
+              <p className="text-xs text-on-surface-muted">Một biểu đồ động cho mọi mốc thời gian</p>
             </div>
           </div>
 
@@ -301,7 +403,7 @@ export default function App() {
               'flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm',
               status.tone === 'ok' && 'border-transparent bg-ok-bg text-ok',
               status.tone === 'warn' && 'border-transparent bg-warn-bg text-warn',
-              status.tone === 'danger' && 'border-transparent bg-danger-bg text-danger'
+              status.tone === 'danger' && 'border-transparent bg-danger-bg text-danger',
             )}
           >
             {status.tone === 'warn' ? (
@@ -330,17 +432,14 @@ export default function App() {
               <p className="font-semibold">Cấu hình tối thiểu cho web</p>
               <ol className="mt-2 list-decimal space-y-1 pl-4 text-on-surface">
                 <li>
-                  Tạo <code className="rounded bg-surface px-1 py-0.5 font-mono text-xs">kinetic-precision/.env</code>{' '}
-                  từ <code className="rounded bg-surface px-1 py-0.5 font-mono text-xs">.env.example</code>.
+                  Tạo <code className="rounded bg-surface px-1 py-0.5 font-mono text-xs">kinetic-precision/.env</code> từ{' '}
+                  <code className="rounded bg-surface px-1 py-0.5 font-mono text-xs">.env.example</code>.
                 </li>
                 <li>
-                  Đặt <code className="rounded bg-surface px-1 py-0.5 font-mono text-xs">VITE_FIREBASE_DATABASE_URL</code>{' '}
-                  = URL Realtime Database (HTTPS, domain <span className="font-mono">firebaseio.com</span> hoặc{' '}
-                  <span className="font-mono">firebasedatabase.app</span>).
+                  Đặt <code className="rounded bg-surface px-1 py-0.5 font-mono text-xs">VITE_FIREBASE_DATABASE_URL</code> = URL Realtime Database
+                  hợp lệ.
                 </li>
-                <li>
-                  Điền thêm các biến <span className="font-mono">VITE_FIREBASE_*</span> từ Firebase Console → Project settings → Your apps.
-                </li>
+                <li>Điền thêm các biến <span className="font-mono">VITE_FIREBASE_*</span> từ Firebase Console.</li>
                 <li>
                   Khởi động lại <code className="rounded bg-surface px-1 py-0.5 font-mono text-xs">npm run dev</code>.
                 </li>
@@ -353,10 +452,6 @@ export default function App() {
           <div className="panel border-danger/20 bg-danger-bg p-4 text-sm text-danger">
             <span className="font-semibold">Firebase từ chối truy cập: </span>
             {readError}
-            <p className="mt-2 text-on-surface">
-              Mở Firebase Console → Realtime Database → Rules và cho phép <code className="font-mono text-xs">read</code> phù hợp
-              (ví dụ thử nghiệm: <code className="font-mono text-xs">.read: true</code>).
-            </p>
           </div>
         ) : null}
 
@@ -375,11 +470,7 @@ export default function App() {
           <Stat label="Tổng điện năng" value={Math.max(0, realtimeData.consumption.total_kwh).toFixed(1)} unit="kWh" />
           <Stat label="Hôm nay" value={Math.max(0, realtimeData.consumption.daily_kwh).toFixed(2)} unit="kWh" />
           <Stat label="Tháng này" value={Math.max(0, realtimeData.consumption.monthly_kwh).toFixed(1)} unit="kWh" />
-          <Stat
-            label="Tiền hôm nay"
-            value={Math.max(0, realtimeData.consumption.daily_cost).toLocaleString('vi-VN')}
-            unit="đ"
-          />
+          <Stat label="Tiền hôm nay" value={Math.max(0, realtimeData.consumption.daily_cost).toLocaleString('vi-VN')} unit="đ" />
           <Stat
             label="Tiền tháng (tạm tính)"
             value={Math.max(0, realtimeData.consumption.monthly_cost).toLocaleString('vi-VN')}
@@ -390,108 +481,58 @@ export default function App() {
         </section>
 
         <ChartPanel
-          title="Công suất thời gian thực"
-          subtitle={
-            livePower.length > 0
-              ? `${livePower.length} mẫu gần nhất từ nhánh realtime · đơn vị W`
-              : 'Đồ thị chạy trực tiếp từ nhánh realtime · đơn vị W'
-          }
+          title="Xu hướng tiêu thụ"
+          subtitle={trend.subtitle}
+          actions={RANGE_OPTIONS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => setSelectedRange(option.key)}
+              className={cn(
+                'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
+                selectedRange === option.key
+                  ? 'border-primary bg-primary text-white shadow-sm'
+                  : 'border-[var(--color-border)] bg-white/70 text-on-surface-muted hover:border-primary/40 hover:text-on-surface',
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
         >
-          <div className="h-[280px] w-full">
+          <div className="h-[360px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              {livePower.length > 0 ? (
-                <AreaChart data={livePower}>
+              {trend.points.length > 0 ? (
+                <AreaChart data={trend.points} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
                   <defs>
-                    <linearGradient id="livePowerGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#0ea5e9" stopOpacity={0.28} />
-                      <stop offset="100%" stopColor="#0ea5e9" stopOpacity={0} />
+                    <linearGradient id={trend.fillId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={trend.stroke} stopOpacity={0.24} />
+                      <stop offset="100%" stopColor={trend.stroke} stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--color-border)" />
-                  <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#5c6370' }} dy={8} minTickGap={24} />
+                  <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#5c6370' }} dy={8} minTickGap={24} />
                   <YAxis
-                    width={52}
+                    width={56}
                     axisLine={false}
                     tickLine={false}
                     tick={{ fontSize: 11, fill: '#5c6370' }}
-                    tickFormatter={(value) => `${value}W`}
+                    tickFormatter={trend.yTickFormatter}
                   />
                   <Tooltip
-                    formatter={(value: number) => [`${value} W`, 'Công suất']}
+                    labelFormatter={(_, payload) => String(payload?.[0]?.payload?.tooltipLabel || '')}
+                    formatter={(value: number) => [trend.tooltipValueFormatter(Number(value)), trend.seriesLabel]}
                     contentStyle={{
                       borderRadius: '10px',
                       border: '1px solid var(--color-border)',
                       fontSize: '12px',
                     }}
                   />
-                  <Area type="monotone" dataKey="power" stroke="#0ea5e9" strokeWidth={2} fill="url(#livePowerGradient)" />
+                  <Area type="monotone" dataKey="value" stroke={trend.stroke} strokeWidth={2} fill={`url(#${trend.fillId})`} />
                 </AreaChart>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-on-surface-muted">
                   <Activity className="h-8 w-8 opacity-40" />
-                  <p>Đang chờ mẫu realtime đầu tiên từ Firebase</p>
-                </div>
-              )}
-            </ResponsiveContainer>
-          </div>
-        </ChartPanel>
-
-        <ChartPanel
-          title="Công suất theo giờ"
-          subtitle={
-            historyChartDay
-              ? `Ngày ${historyChartDay}${historyChartDay !== todayKey ? ' (dữ liệu gần nhất)' : ''} · đơn vị kW`
-              : 'Đơn vị kW · múi giờ Việt Nam'
-          }
-        >
-          <div className="h-[280px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              {powerHistory.length > 0 ? (
-                <AreaChart data={powerHistory}>
-                  <defs>
-                    <linearGradient id="gp" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.2} />
-                      <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--color-border)" />
-                  <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#5c6370' }} dy={8} />
-                  <YAxis width={36} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#5c6370' }} />
-                  <Tooltip
-                    contentStyle={{
-                      borderRadius: '10px',
-                      border: '1px solid var(--color-border)',
-                      fontSize: '12px',
-                    }}
-                  />
-                  <Area type="monotone" dataKey="power" stroke="#3b82f6" strokeWidth={2} fill="url(#gp)" />
-                </AreaChart>
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-on-surface-muted">
-                  <Activity className="h-8 w-8 opacity-40" />
-                  <p>Chưa có dữ liệu nhánh <span className="font-mono text-xs">history</span></p>
-                </div>
-              )}
-            </ResponsiveContainer>
-          </div>
-        </ChartPanel>
-
-        <ChartPanel title="Điện năng 7 ngày gần nhất" subtitle="kWh theo ngày (MM-DD)">
-          <div className="h-[260px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              {dailyUsage.length > 0 ? (
-                <BarChart data={dailyUsage} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                  <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#5c6370' }} dy={8} />
-                  <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '10px', fontSize: '12px' }} />
-                  <Bar dataKey="value" name="kWh" radius={[6, 6, 0, 0]} maxBarSize={48}>
-                    {dailyUsage.map((_, i) => (
-                      <Cell key={i} fill={i === dailyUsage.length - 1 ? '#3b82f6' : '#3b82f644'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              ) : (
-                <div className="flex h-full items-center justify-center text-sm text-on-surface-muted">
-                  Chưa có dữ liệu nhánh <span className="ml-1 font-mono text-xs">daily_usage</span>
+                  <p>{trend.emptyMessage}</p>
                 </div>
               )}
             </ResponsiveContainer>

@@ -14,6 +14,8 @@ STATE_SAVE_INTERVAL_SEC = 300  # Lưu state tối đa mỗi 5 phút
 ENERGY_ROLLBACK_TOLERANCE_KWH = 0.001
 HISTORY_RETENTION_DAYS = 1095   # 3 năm dữ liệu theo giờ
 DAILY_USAGE_RETENTION_DAYS = 3650  # 10 năm dữ liệu tổng theo ngày
+RECENT_POWER_RETENTION_SECONDS = 3600  # 60 phút gần nhất cho biểu đồ "giờ"
+RECENT_POWER_CLEANUP_INTERVAL = 12  # dọn 1 lần/phút nếu ESP gửi mỗi 5 giây
 
 from config import (
     init_firebase,
@@ -39,6 +41,7 @@ class ElectricityProcessor:
         self.state_ref = self.firebase_ref.child('state') if self.firebase_ref else None
         self.realtime_ref = self.firebase_ref.child('realtime') if self.firebase_ref else None
         self.history_ref = self.firebase_ref.child('history') if self.firebase_ref else None
+        self.power_recent_ref = self.firebase_ref.child('power_recent') if self.firebase_ref else None
 
         self.last_energy_reading = None
         self.monthly_start_energy = None
@@ -48,6 +51,7 @@ class ElectricityProcessor:
         self.last_state_save_time = 0.0  # throttle: save state tối đa mỗi 5 phút
         self.last_processed_date = None
         self.last_processed_month_key = None
+        self.recent_power_writes_since_cleanup = 0
 
         # Khởi tạo giá trị ban đầu từ Firebase
         self._initialize_energy_baseline()
@@ -181,6 +185,36 @@ class ElectricityProcessor:
         except Exception as e:
             logger.error(f"Lỗi ghi state lên Firebase: {e}")
 
+    def _push_recent_power(self, power_w: float, now: datetime):
+        """Giữ 60 phút công suất gần nhất để chart "giờ" có dữ liệu sau khi reload UI."""
+        if not self.power_recent_ref:
+            return
+        try:
+            timestamp_ms = int(now.timestamp() * 1000)
+            self.power_recent_ref.child(str(timestamp_ms)).set({
+                "time": now.isoformat(),
+                "power": round(power_w, 1),
+            })
+
+            self.recent_power_writes_since_cleanup += 1
+            if self.recent_power_writes_since_cleanup < RECENT_POWER_CLEANUP_INTERVAL:
+                return
+
+            self.recent_power_writes_since_cleanup = 0
+            cutoff_ms = int((now - timedelta(seconds=RECENT_POWER_RETENTION_SECONDS)).timestamp() * 1000)
+            snap = self.power_recent_ref.get()
+            if not snap:
+                return
+
+            for key in snap.keys():
+                try:
+                    if int(key) < cutoff_ms:
+                        self.power_recent_ref.child(key).delete()
+                except (TypeError, ValueError):
+                    self.power_recent_ref.child(key).delete()
+        except Exception as e:
+            logger.warning(f"Lỗi lưu power_recent: {e}")
+
     def process_mqtt_message(self, client, userdata, message):
         """Xử lý tin nhắn MQTT từ ESP8266"""
         try:
@@ -262,7 +296,10 @@ class ElectricityProcessor:
                     "timestamp": now.isoformat(),
                 })
 
-            # 2. Lịch sử theo giờ
+            # 2. Công suất gần nhất cho chart range "giờ"
+            self._push_recent_power(power_w, now)
+
+            # 3. Lịch sử theo giờ
             history_slot = f"{today_str}T{now.hour:02d}"
             if self.history_ref and history_slot != self.last_history_slot:
                 hour_str = f"{now.hour:02d}:00"
@@ -272,7 +309,7 @@ class ElectricityProcessor:
                 })
                 self.last_history_slot = history_slot
 
-            # 3. Daily usage cho bar chart
+            # 4. Daily usage cho chart range tháng/năm/all
             if self.firebase_ref:
                 self.firebase_ref.child('daily_usage').child(today_str).set(daily_consumption)
 
