@@ -306,18 +306,42 @@ export default function App() {
   const [socketConnected, setSocketConnected] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const [connectTimeout, setConnectTimeout] = useState(false);
+  const [recentPowerDenied, setRecentPowerDenied] = useState(false);
 
   useEffect(() => {
     if (!firebaseConfigured) return;
 
     const onDenied = (err: Error) => setReadError(err.message);
+    const onRecentPowerDenied = (err: Error) => {
+      if (String(err.message).includes('permission_denied')) {
+        setRecentPowerDenied(true);
+        setRecentPower([]);
+        return;
+      }
+      setReadError(err.message);
+    };
 
     const unsubSocket = onValue(ref(db, '.info/connected'), (snap) => setSocketConnected(snap.val() === true), onDenied);
 
     const unsubRealtime = onValue(
       ref(db, 'realtime'),
       (snapshot) => {
-        if (snapshot.exists()) setRealtimeData(normalizeRealtime(snapshot.val()));
+        if (!snapshot.exists()) return;
+        const nextRealtime = normalizeRealtime(snapshot.val());
+        setRealtimeData(nextRealtime);
+
+        if (!recentPowerDenied || !nextRealtime.timestamp) return;
+
+        const point = {
+          iso: nextRealtime.timestamp,
+          power: +Number(nextRealtime.metrics.power || 0).toFixed(1),
+        };
+
+        setRecentPower((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.iso === point.iso && last.power === point.power) return prev;
+          return [...prev, point].slice(-720);
+        });
       },
       onDenied,
     );
@@ -325,9 +349,10 @@ export default function App() {
     const unsubRecentPower = onValue(
       query(ref(db, 'power_recent'), orderByKey(), limitToLast(720)),
       (snapshot) => {
+        setRecentPowerDenied(false);
         setRecentPower(snapshot.exists() ? parseRecentPower(snapshot.val()) : []);
       },
-      onDenied,
+      onRecentPowerDenied,
     );
 
     const unsubHistory = onValue(
@@ -358,7 +383,7 @@ export default function App() {
       unsubHistory();
       unsubUsage();
     };
-  }, []);
+  }, [recentPowerDenied]);
 
   const trend = buildTrendModel(selectedRange, recentPower, hourlyHistory, dailyUsage);
 
@@ -499,6 +524,12 @@ export default function App() {
             </button>
           ))}
         >
+          {selectedRange === 'hour' && recentPowerDenied ? (
+            <div className="mb-4 rounded-2xl border border-warn/20 bg-warn-bg px-4 py-3 text-sm text-warn">
+              Nhánh <code className="font-mono text-xs">/power_recent</code> chưa được mở quyền đọc trên Firebase.
+              Range <strong>Giờ</strong> hiện chỉ hiển thị dữ liệu nhận được từ lúc bạn mở trang.
+            </div>
+          ) : null}
           <div className="h-[360px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               {trend.points.length > 0 ? (
