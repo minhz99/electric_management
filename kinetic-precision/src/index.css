@@ -44,35 +44,6 @@
   box-shadow: 0 15px 50px -10px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(255,255,255,1);
 }
 
-.spotlight-card {
-  @apply relative overflow-hidden rounded-[28px] p-5 text-white sm:p-6;
-  box-shadow: 0 24px 60px -28px rgba(15, 23, 42, 0.55);
-}
-
-.spotlight-card::before {
-  content: "";
-  position: absolute;
-  inset: auto -10% -42% auto;
-  width: 220px;
-  height: 220px;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.14);
-  filter: blur(10px);
-}
-
-.spotlight-card > * {
-  position: relative;
-  z-index: 1;
-}
-
-.spotlight-card-daily {
-  background: linear-gradient(135deg, #115e59 0%, #0f766e 34%, #0284c7 100%);
-}
-
-.spotlight-card-monthly {
-  background: linear-gradient(135deg, #172554 0%, #1d4ed8 52%, #3b82f6 100%);
-}
-
 .stat-card {
   @apply relative overflow-hidden rounded-[20px] bg-white/80 backdrop-blur-md border border-white/50 p-5;
   box-shadow: 0 4px 20px -2px rgba(0,0,0,0.03);
@@ -93,6 +64,30 @@
 }
 
 .stat-card.emphasis:hover {
+  box-shadow: 0 15px 35px -5px rgba(37, 99, 235, 0.5);
+  transform: scale(1.02) translateY(-2px);
+}
+
+.stat-card.tone-daily {
+  background: linear-gradient(135deg, #0f766e 0%, #0f9b8e 100%);
+  color: white;
+  border: border-transparent;
+  box-shadow: 0 10px 25px -5px rgba(15, 118, 110, 0.34);
+}
+
+.stat-card.tone-daily:hover {
+  box-shadow: 0 15px 35px -5px rgba(15, 118, 110, 0.42);
+  transform: scale(1.02) translateY(-2px);
+}
+
+.stat-card.tone-monthly {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: white;
+  border: border-transparent;
+  box-shadow: 0 10px 25px -5px rgba(37, 99, 235, 0.4);
+}
+
+.stat-card.tone-monthly:hover {
   box-shadow: 0 15px 35px -5px rgba(37, 99, 235, 0.5);
   transform: scale(1.02) translateY(-2px);
 }

@@ -235,67 +235,39 @@ function Stat({
   unit,
   emphasis,
   icon,
+  tone,
 }: {
   label: string;
   value: string;
   unit?: string;
   emphasis?: boolean;
   icon?: ReactNode;
+  tone?: 'daily' | 'monthly';
 }) {
+  const highlighted = emphasis || Boolean(tone);
+
   return (
-    <div className={cn('stat-card flex flex-col justify-between group', emphasis && 'emphasis')}>
+    <div className={cn('stat-card flex flex-col justify-between group', emphasis && 'emphasis', tone && `tone-${tone}`)}>
       <div className="mb-4 flex items-center justify-between">
         <p
           className={cn(
             'text-xs font-semibold tracking-wider uppercase',
-            emphasis ? 'text-white/80' : 'text-on-surface-muted transition-colors duration-300 group-hover:text-primary',
+            highlighted ? 'text-white/80' : 'text-on-surface-muted transition-colors duration-300 group-hover:text-primary',
           )}
         >
           {label}
         </p>
         {icon ? (
-          <div className={cn('rounded-full p-2', emphasis ? 'bg-white/20 text-white' : 'bg-primary/10 text-primary')}>
+          <div className={cn('rounded-full p-2', highlighted ? 'bg-white/20 text-white' : 'bg-primary/10 text-primary')}>
             {icon}
           </div>
         ) : null}
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className={cn('text-2xl font-bold tracking-tight sm:text-3xl', emphasis ? '' : 'text-on-surface')}>{value}</span>
-        {unit ? <span className={cn('text-sm font-medium', emphasis ? 'text-white/80' : 'text-on-surface-muted')}>{unit}</span> : null}
+        <span className={cn('text-2xl font-bold tracking-tight sm:text-3xl', highlighted ? '' : 'text-on-surface')}>{value}</span>
+        {unit ? <span className={cn('text-sm font-medium', highlighted ? 'text-white/80' : 'text-on-surface-muted')}>{unit}</span> : null}
       </div>
     </div>
-  );
-}
-
-function SpotlightStat({
-  label,
-  value,
-  unit,
-  detail,
-  icon,
-  className,
-}: {
-  label: string;
-  value: string;
-  unit?: string;
-  detail?: string;
-  icon?: ReactNode;
-  className?: string;
-}) {
-  return (
-    <article className={cn('spotlight-card', className)}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/78">{label}</p>
-          <div className="mt-3 flex items-end gap-2">
-            <span className="text-[clamp(2rem,7vw,3rem)] font-bold leading-none tracking-tight text-white">{value}</span>
-            {unit ? <span className="pb-1 text-sm font-medium text-white/78">{unit}</span> : null}
-          </div>
-        </div>
-        {icon ? <div className="rounded-2xl bg-white/14 p-3 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">{icon}</div> : null}
-      </div>
-      {detail ? <p className="mt-6 text-sm text-white/78">{detail}</p> : null}
-    </article>
   );
 }
 
@@ -414,8 +386,6 @@ export default function App() {
 
   const dailyCost = Math.max(0, realtimeData.consumption.daily_cost);
   const monthlyCost = Math.max(0, realtimeData.consumption.monthly_cost);
-  const dailyKwh = Math.max(0, realtimeData.consumption.daily_kwh);
-  const monthlyKwh = Math.max(0, realtimeData.consumption.monthly_kwh);
   const totalKwh = Math.max(0, realtimeData.consumption.total_kwh);
 
   return (
@@ -423,21 +393,19 @@ export default function App() {
       <div className="mx-auto max-w-5xl space-y-6 px-4 pt-4 sm:pt-6">
         <section className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <SpotlightStat
+            <Stat
               label="Tiền điện hôm nay"
               value={dailyCost.toLocaleString('vi-VN')}
               unit="đ"
-              detail={`Điện năng hôm nay ${dailyKwh.toFixed(2)} kWh`}
               icon={<Wallet className="h-5 w-5" />}
-              className="spotlight-card-daily"
+              tone="daily"
             />
-            <SpotlightStat
+            <Stat
               label="Tiền điện tháng này"
               value={monthlyCost.toLocaleString('vi-VN')}
               unit="đ"
-              detail={`Điện năng tháng này ${monthlyKwh.toFixed(1)} kWh`}
               icon={<Zap className="h-5 w-5" />}
-              className="spotlight-card-monthly"
+              tone="monthly"
             />
           </div>
         </section>
