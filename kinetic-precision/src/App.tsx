@@ -4,12 +4,12 @@
  */
 
 import { useEffect, useState, useMemo, type ReactNode } from 'react';
-import { Activity, AlertCircle, CheckCircle2, Database, Loader2, Wallet, Zap } from 'lucide-react';
+import { Activity, AlertCircle, Wallet, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { limitToLast, onValue, orderByKey, query, ref } from 'firebase/database';
-import { db, firebaseConfigured, getDatabaseHostLabel } from './firebase';
+import { db, firebaseConfigured } from './firebase';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -335,9 +335,7 @@ export default function App() {
   const [dailyUsage, setDailyUsage] = useState<DailyUsagePoint[]>([]);
   const [selectedRange, setSelectedRange] = useState<ChartRange>('day');
 
-  const [socketConnected, setSocketConnected] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
-  const [connectTimeout, setConnectTimeout] = useState(false);
   const [recentPowerDenied, setRecentPowerDenied] = useState(false);
 
   useEffect(() => {
@@ -352,8 +350,6 @@ export default function App() {
       }
       setReadError(err.message);
     };
-
-    const unsubSocket = onValue(ref(db, '.info/connected'), (snap) => setSocketConnected(snap.val() === true), onDenied);
 
     const unsubRealtime = onValue(
       ref(db, 'realtime'),
@@ -403,13 +399,7 @@ export default function App() {
       onDenied,
     );
 
-    const timeoutId = window.setTimeout(() => {
-      setConnectTimeout(true);
-    }, 10000);
-
     return () => {
-      window.clearTimeout(timeoutId);
-      unsubSocket();
       unsubRealtime();
       unsubRecentPower();
       unsubHistory();
@@ -422,48 +412,11 @@ export default function App() {
     [selectedRange, recentPower, hourlyHistory, dailyUsage]
   );
 
-  const lastUpdated =
-    realtimeData.timestamp &&
-    formatDateTime(realtimeData.timestamp, {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-  const host = getDatabaseHostLabel();
   const dailyCost = Math.max(0, realtimeData.consumption.daily_cost);
   const monthlyCost = Math.max(0, realtimeData.consumption.monthly_cost);
   const dailyKwh = Math.max(0, realtimeData.consumption.daily_kwh);
   const monthlyKwh = Math.max(0, realtimeData.consumption.monthly_kwh);
   const totalKwh = Math.max(0, realtimeData.consumption.total_kwh);
-
-  const status = !firebaseConfigured
-    ? { tone: 'danger' as const, label: 'Chưa cấu hình', detail: 'Thiếu VITE_FIREBASE_DATABASE_URL hợp lệ trong .env' }
-    : readError
-      ? { tone: 'danger' as const, label: 'Lỗi đọc dữ liệu', detail: readError }
-      : connectTimeout && !socketConnected
-        ? { tone: 'danger' as const, label: 'Không kết nối được', detail: 'Kiểm tra URL RTDB và mạng' }
-        : !socketConnected
-          ? { tone: 'warn' as const, label: 'Đang kết nối…', detail: host }
-          : { tone: 'ok' as const, label: 'Realtime Database', detail: host };
-
-  const statusClasses = cn(
-    'status-pill',
-    status.tone === 'ok' && 'bg-ok text-ok',
-    status.tone === 'warn' && 'bg-warn text-warn',
-    status.tone === 'danger' && 'bg-danger text-danger',
-  );
-
-  const statusIcon =
-    status.tone === 'warn' ? (
-      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
-    ) : status.tone === 'ok' ? (
-      <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
-    ) : (
-      <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-    );
 
   return (
     <div className="page-shell pb-10">
@@ -486,18 +439,6 @@ export default function App() {
               icon={<Zap className="h-5 w-5" />}
               className="spotlight-card-monthly"
             />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className={statusClasses}>
-              {statusIcon}
-              <span className="flex items-center gap-1.5 font-semibold">
-                <Database className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
-                {status.label}
-              </span>
-            </div>
-            <p className="status-note break-all">{status.detail}</p>
-            {lastUpdated && socketConnected && !readError ? <p className="status-note">Cập nhật {lastUpdated}</p> : null}
           </div>
         </section>
 
@@ -531,11 +472,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <section className="space-y-3">
-          <div>
-            <h2 className="font-headline text-lg font-bold text-on-surface">Thông số hệ thống</h2>
-            <p className="mt-1 text-sm text-on-surface-muted">Giữ lại các chỉ số cần theo dõi nhanh, giảm nhiễu khi xem trên mobile.</p>
-          </div>
+        <section>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <Stat label="Tổng điện năng" value={totalKwh.toFixed(1)} unit="kWh" />
             <Stat label="Công suất" value={(realtimeData.metrics.power / 1000).toFixed(2)} unit="kW" />
