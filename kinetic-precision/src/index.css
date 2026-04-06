@@ -44,6 +44,58 @@
   box-shadow: 0 15px 50px -10px rgba(0,0,0,0.06), inset 0 0 0 1px rgba(255,255,255,1);
 }
 
+.spotlight-card {
+  @apply relative overflow-hidden rounded-[28px] p-5 text-white sm:p-6;
+  box-shadow: 0 24px 60px -28px rgba(15, 23, 42, 0.55);
+}
+
+.spotlight-card::before {
+  content: "";
+  position: absolute;
+  inset: auto -10% -42% auto;
+  width: 220px;
+  height: 220px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.14);
+  filter: blur(10px);
+}
+
+.spotlight-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.spotlight-card-daily {
+  background: linear-gradient(135deg, #115e59 0%, #0f766e 34%, #0284c7 100%);
+}
+
+.spotlight-card-monthly {
+  background: linear-gradient(135deg, #172554 0%, #1d4ed8 52%, #3b82f6 100%);
+}
+
+.status-pill {
+  @apply inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+}
+
+.status-pill.bg-ok {
+  background: var(--color-ok-bg);
+}
+
+.status-pill.bg-warn {
+  background: var(--color-warn-bg);
+}
+
+.status-pill.bg-danger {
+  background: var(--color-danger-bg);
+}
+
+.status-note {
+  @apply rounded-full px-3 py-1.5 text-xs text-on-surface-muted backdrop-blur-md;
+  background: rgba(255,255,255,0.78);
+  box-shadow: 0 8px 24px -18px rgba(15, 23, 42, 0.32);
+}
+
 .stat-card {
   @apply relative overflow-hidden rounded-[20px] bg-white/80 backdrop-blur-md border border-white/50 p-5;
   box-shadow: 0 4px 20px -2px rgba(0,0,0,0.03);

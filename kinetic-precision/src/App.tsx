@@ -260,10 +260,42 @@ function Stat({
         ) : null}
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className={cn('text-3xl font-bold tracking-tight', emphasis ? '' : 'text-on-surface')}>{value}</span>
+        <span className={cn('text-2xl font-bold tracking-tight sm:text-3xl', emphasis ? '' : 'text-on-surface')}>{value}</span>
         {unit ? <span className={cn('text-sm font-medium', emphasis ? 'text-white/80' : 'text-on-surface-muted')}>{unit}</span> : null}
       </div>
     </div>
+  );
+}
+
+function SpotlightStat({
+  label,
+  value,
+  unit,
+  detail,
+  icon,
+  className,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  detail?: string;
+  icon?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <article className={cn('spotlight-card', className)}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/78">{label}</p>
+          <div className="mt-3 flex items-end gap-2">
+            <span className="text-[clamp(2rem,7vw,3rem)] font-bold leading-none tracking-tight text-white">{value}</span>
+            {unit ? <span className="pb-1 text-sm font-medium text-white/78">{unit}</span> : null}
+          </div>
+        </div>
+        {icon ? <div className="rounded-2xl bg-white/14 p-3 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">{icon}</div> : null}
+      </div>
+      {detail ? <p className="mt-6 text-sm text-white/78">{detail}</p> : null}
+    </article>
   );
 }
 
@@ -285,7 +317,7 @@ function ChartPanel({
           <h2 className="font-headline text-xl font-bold text-on-surface">{title}</h2>
           {subtitle ? <p className="mt-1 text-[13px] text-on-surface-muted">{subtitle}</p> : null}
         </div>
-        {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
+        {actions ? <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{actions}</div> : null}
       </div>
       {children}
     </section>
@@ -401,6 +433,11 @@ export default function App() {
     });
 
   const host = getDatabaseHostLabel();
+  const dailyCost = Math.max(0, realtimeData.consumption.daily_cost);
+  const monthlyCost = Math.max(0, realtimeData.consumption.monthly_cost);
+  const dailyKwh = Math.max(0, realtimeData.consumption.daily_kwh);
+  const monthlyKwh = Math.max(0, realtimeData.consumption.monthly_kwh);
+  const totalKwh = Math.max(0, realtimeData.consumption.total_kwh);
 
   const status = !firebaseConfigured
     ? { tone: 'danger' as const, label: 'Chưa cấu hình', detail: 'Thiếu VITE_FIREBASE_DATABASE_URL hợp lệ trong .env' }
@@ -412,47 +449,58 @@ export default function App() {
           ? { tone: 'warn' as const, label: 'Đang kết nối…', detail: host }
           : { tone: 'ok' as const, label: 'Realtime Database', detail: host };
 
+  const statusClasses = cn(
+    'status-pill',
+    status.tone === 'ok' && 'bg-ok text-ok',
+    status.tone === 'warn' && 'bg-warn text-warn',
+    status.tone === 'danger' && 'bg-danger text-danger',
+  );
+
+  const statusIcon =
+    status.tone === 'warn' ? (
+      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+    ) : status.tone === 'ok' ? (
+      <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+    ) : (
+      <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+    );
+
   return (
     <div className="page-shell pb-10">
-      <header className="sticky top-0 z-10 border-b border-[var(--color-border)] bg-surface-elevated/95 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-5xl flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-on-primary">
-              <Zap className="h-5 w-5" aria-hidden />
-            </span>
-            <div>
-              <h1 className="font-headline text-lg font-bold tracking-tight text-on-surface">Điện năng</h1>
-              <p className="text-xs text-on-surface-muted">Một biểu đồ động cho mọi mốc thời gian</p>
-            </div>
+      <div className="mx-auto max-w-5xl space-y-6 px-4 pt-4 sm:pt-6">
+        <section className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SpotlightStat
+              label="Tiền điện hôm nay"
+              value={dailyCost.toLocaleString('vi-VN')}
+              unit="đ"
+              detail={`Điện năng hôm nay ${dailyKwh.toFixed(2)} kWh`}
+              icon={<Wallet className="h-5 w-5" />}
+              className="spotlight-card-daily"
+            />
+            <SpotlightStat
+              label="Tiền điện tháng này"
+              value={monthlyCost.toLocaleString('vi-VN')}
+              unit="đ"
+              detail={`Điện năng tháng này ${monthlyKwh.toFixed(1)} kWh`}
+              icon={<Zap className="h-5 w-5" />}
+              className="spotlight-card-monthly"
+            />
           </div>
 
-          <div
-            className={cn(
-              'flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm',
-              status.tone === 'ok' && 'border-transparent bg-ok-bg text-ok',
-              status.tone === 'warn' && 'border-transparent bg-warn-bg text-warn',
-              status.tone === 'danger' && 'border-transparent bg-danger-bg text-danger',
-            )}
-          >
-            {status.tone === 'warn' ? (
-              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" aria-hidden />
-            ) : status.tone === 'ok' ? (
-              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            ) : (
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            )}
-            <div className="min-w-0">
-              <p className="flex items-center gap-1.5 font-semibold">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className={statusClasses}>
+              {statusIcon}
+              <span className="flex items-center gap-1.5 font-semibold">
                 <Database className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
                 {status.label}
-              </p>
-              <p className="mt-0.5 break-all text-xs opacity-90">{status.detail}</p>
+              </span>
             </div>
+            <p className="status-note break-all">{status.detail}</p>
+            {lastUpdated && socketConnected && !readError ? <p className="status-note">Cập nhật {lastUpdated}</p> : null}
           </div>
-        </div>
-      </header>
+        </section>
 
-      <div className="mx-auto max-w-5xl space-y-6 px-4 pt-6">
         {!firebaseConfigured ? (
           <div className="panel flex gap-3 border-danger/20 bg-danger-bg p-4 text-sm text-danger">
             <AlertCircle className="h-5 w-5 shrink-0" />
@@ -483,29 +531,19 @@ export default function App() {
           </div>
         ) : null}
 
-        {lastUpdated && socketConnected && !readError ? (
-          <p className="text-xs text-on-surface-muted">
-            Cập nhật gần nhất (GMT+7): <span className="font-medium text-on-surface">{lastUpdated}</span>
-          </p>
-        ) : null}
-
-        <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <Stat label="Điện áp" value={realtimeData.metrics.voltage.toFixed(1)} unit="V" />
-          <Stat label="Dòng điện" value={realtimeData.metrics.current.toFixed(2)} unit="A" />
-          <Stat label="Công suất" value={(realtimeData.metrics.power / 1000).toFixed(2)} unit="kW" />
-          <Stat label="Hệ số cos φ" value={realtimeData.metrics.pf.toFixed(2)} />
-          <Stat label="Tần số" value={realtimeData.metrics.frequency.toFixed(1)} unit="Hz" />
-          <Stat label="Tổng điện năng" value={Math.max(0, realtimeData.consumption.total_kwh).toFixed(1)} unit="kWh" />
-          <Stat label="Hôm nay" value={Math.max(0, realtimeData.consumption.daily_kwh).toFixed(2)} unit="kWh" />
-          <Stat label="Tháng này" value={Math.max(0, realtimeData.consumption.monthly_kwh).toFixed(1)} unit="kWh" />
-          <Stat label="Tiền hôm nay" value={Math.max(0, realtimeData.consumption.daily_cost).toLocaleString('vi-VN')} unit="đ" />
-          <Stat
-            label="Tiền tháng (tạm tính)"
-            value={Math.max(0, realtimeData.consumption.monthly_cost).toLocaleString('vi-VN')}
-            unit="đ"
-            emphasis
-            icon={<Wallet className="h-4 w-4" />}
-          />
+        <section className="space-y-3">
+          <div>
+            <h2 className="font-headline text-lg font-bold text-on-surface">Thông số hệ thống</h2>
+            <p className="mt-1 text-sm text-on-surface-muted">Giữ lại các chỉ số cần theo dõi nhanh, giảm nhiễu khi xem trên mobile.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Stat label="Tổng điện năng" value={totalKwh.toFixed(1)} unit="kWh" />
+            <Stat label="Công suất" value={(realtimeData.metrics.power / 1000).toFixed(2)} unit="kW" />
+            <Stat label="Điện áp" value={realtimeData.metrics.voltage.toFixed(1)} unit="V" />
+            <Stat label="Dòng điện" value={realtimeData.metrics.current.toFixed(2)} unit="A" />
+            <Stat label="Hệ số cos φ" value={realtimeData.metrics.pf.toFixed(2)} />
+            <Stat label="Tần số" value={realtimeData.metrics.frequency.toFixed(1)} unit="Hz" />
+          </div>
         </section>
 
         <ChartPanel
@@ -517,7 +555,7 @@ export default function App() {
               type="button"
               onClick={() => setSelectedRange(option.key)}
               className={cn(
-                'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
+                'shrink-0 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
                 selectedRange === option.key
                   ? 'border-primary bg-primary text-white shadow-sm'
                   : 'border-[var(--color-border)] bg-white/70 text-on-surface-muted hover:border-primary/40 hover:text-on-surface',
