@@ -70,23 +70,24 @@ An "All-in-One" electricity monitoring and management system designed for real-t
 
 ## ⚡ Running the System
 
-Build dashboard React trước:
+Repo hiện chỉ dùng **một UI duy nhất** là dashboard React chạy bằng **Vite live reload**.
 
-```bash
-cd kinetic-precision
-npm run build
-cd ..
-```
-
-Sau đó khởi động toàn bộ hệ thống (Broker, Processor, và web server tĩnh):
+1. Chạy backend:
 
 ```bash
 python main.py
 ```
 
+2. Ở terminal khác, chạy dashboard:
+
+```bash
+cd kinetic-precision
+npm run dev
+```
+
 -   The **MQTT Broker** will start on `tcp://0.0.0.0:1883`.
 -   The **Data Processor** will begin listening for sensor data.
--   The **Web Server** will serve `kinetic-precision/dist` on port `5535` (fallback to `frontend/` only if no production build is found).
+-   The **Live Dashboard** will run on `http://localhost:5535` with hot reload.
 
 ## 💰 Electricity Pricing (EVN Tiers)
 

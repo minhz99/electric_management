@@ -31,8 +31,10 @@ function todayKeyVietnam(): string {
 }
 
 const EMPTY_METRICS = { voltage: 0, current: 0, power: 0, frequency: 0, pf: 0 };
-const EMPTY_CONSUMPTION = { daily_kwh: 0, monthly_kwh: 0, daily_cost: 0, monthly_cost: 0 };
+const EMPTY_CONSUMPTION = { daily_kwh: 0, monthly_kwh: 0, total_kwh: 0, daily_cost: 0, monthly_cost: 0 };
+const MAX_LIVE_POINTS = 120;
 type DayHistoryMap = Record<string, { power?: number }>;
+type LiveChartPoint = { time: string; power: number };
 
 function normalizeRealtime(raw: unknown): {
   metrics: typeof EMPTY_METRICS;
@@ -123,6 +125,7 @@ export default function App() {
     consumption: EMPTY_CONSUMPTION,
     timestamp: null as string | null,
   });
+  const [livePower, setLivePower] = useState<LiveChartPoint[]>([]);
   const [powerHistory, setPowerHistory] = useState<{ time: string; power: number }[]>([]);
   const [historyChartDay, setHistoryChartDay] = useState<string | null>(null);
   const [dailyUsage, setDailyUsage] = useState<{ day: string; value: number }[]>([]);
@@ -175,7 +178,28 @@ export default function App() {
     const unsubRt = onValue(
       ref(db, 'realtime'),
       (snapshot) => {
-        if (snapshot.exists()) setRealtimeData(normalizeRealtime(snapshot.val()));
+        if (!snapshot.exists()) return;
+        const nextRealtime = normalizeRealtime(snapshot.val());
+        setRealtimeData(nextRealtime);
+
+        if (!nextRealtime.timestamp) return;
+
+        const timeLabel = new Date(nextRealtime.timestamp).toLocaleTimeString('vi-VN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          timeZone: 'Asia/Ho_Chi_Minh',
+        });
+        const point = {
+          time: timeLabel,
+          power: +nextRealtime.metrics.power.toFixed(1),
+        };
+
+        setLivePower((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.time === point.time && last.power === point.power) return prev;
+          return [...prev, point].slice(-MAX_LIVE_POINTS);
+        });
       },
       onDenied
     );
@@ -342,12 +366,13 @@ export default function App() {
           </p>
         ) : null}
 
-        <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           <Stat label="Điện áp" value={realtimeData.metrics.voltage.toFixed(1)} unit="V" />
           <Stat label="Dòng điện" value={realtimeData.metrics.current.toFixed(2)} unit="A" />
           <Stat label="Công suất" value={(realtimeData.metrics.power / 1000).toFixed(2)} unit="kW" />
           <Stat label="Hệ số cos φ" value={realtimeData.metrics.pf.toFixed(2)} />
           <Stat label="Tần số" value={realtimeData.metrics.frequency.toFixed(1)} unit="Hz" />
+          <Stat label="Tổng điện năng" value={Math.max(0, realtimeData.consumption.total_kwh).toFixed(1)} unit="kWh" />
           <Stat label="Hôm nay" value={Math.max(0, realtimeData.consumption.daily_kwh).toFixed(2)} unit="kWh" />
           <Stat label="Tháng này" value={Math.max(0, realtimeData.consumption.monthly_kwh).toFixed(1)} unit="kWh" />
           <Stat
@@ -363,6 +388,53 @@ export default function App() {
             icon={<Wallet className="h-4 w-4" />}
           />
         </section>
+
+        <ChartPanel
+          title="Công suất thời gian thực"
+          subtitle={
+            livePower.length > 0
+              ? `${livePower.length} mẫu gần nhất từ nhánh realtime · đơn vị W`
+              : 'Đồ thị chạy trực tiếp từ nhánh realtime · đơn vị W'
+          }
+        >
+          <div className="h-[280px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              {livePower.length > 0 ? (
+                <AreaChart data={livePower}>
+                  <defs>
+                    <linearGradient id="livePowerGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#0ea5e9" stopOpacity={0.28} />
+                      <stop offset="100%" stopColor="#0ea5e9" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--color-border)" />
+                  <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#5c6370' }} dy={8} minTickGap={24} />
+                  <YAxis
+                    width={52}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 11, fill: '#5c6370' }}
+                    tickFormatter={(value) => `${value}W`}
+                  />
+                  <Tooltip
+                    formatter={(value: number) => [`${value} W`, 'Công suất']}
+                    contentStyle={{
+                      borderRadius: '10px',
+                      border: '1px solid var(--color-border)',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Area type="monotone" dataKey="power" stroke="#0ea5e9" strokeWidth={2} fill="url(#livePowerGradient)" />
+                </AreaChart>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-on-surface-muted">
+                  <Activity className="h-8 w-8 opacity-40" />
+                  <p>Đang chờ mẫu realtime đầu tiên từ Firebase</p>
+                </div>
+              )}
+            </ResponsiveContainer>
+          </div>
+        </ChartPanel>
 
         <ChartPanel
           title="Công suất theo giờ"
