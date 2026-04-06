@@ -35,7 +35,7 @@ type RealtimeState = {
 type RecentPowerPoint = { iso: string; power: number };
 type HourlyPoint = { iso: string; powerKw: number };
 type DailyUsagePoint = { dateKey: string; value: number };
-type TrendPoint = { label: string; value: number; tooltipLabel: string; x?: number };
+type TrendPoint = { label: string; value: number; tooltipLabel: string };
 type TrendModel = {
   points: TrendPoint[];
   subtitle: string;
@@ -43,13 +43,6 @@ type TrendModel = {
   seriesLabel: string;
   stroke: string;
   fillId: string;
-  xDataKey: 'label' | 'x';
-  xAxisType?: 'category' | 'number';
-  xAxisScale?: 'auto' | 'time';
-  xAxisDomain?: [number, number];
-  xTickFormatter?: (value: string | number) => string;
-  tooltipLabelFormatter?: (label: string | number, payload?: readonly { payload?: TrendPoint }[]) => string;
-  animationDuration: number;
   yTickFormatter: (value: number) => string;
   tooltipValueFormatter: (value: number) => string;
 };
@@ -138,18 +131,11 @@ function aggregateYearly(points: DailyUsagePoint[]): TrendPoint[] {
     }));
 }
 
-function buildTrendModel(
-  range: ChartRange,
-  recentPower: RecentPowerPoint[],
-  hourlyHistory: HourlyPoint[],
-  dailyUsage: DailyUsagePoint[],
-  chartNowMs: number,
-): TrendModel {
+function buildTrendModel(range: ChartRange, recentPower: RecentPowerPoint[], hourlyHistory: HourlyPoint[], dailyUsage: DailyUsagePoint[]): TrendModel {
   switch (range) {
     case 'hour':
       return {
         points: recentPower.map((point) => ({
-          x: new Date(point.iso).getTime(),
           label: formatDateTime(point.iso, { hour: '2-digit', minute: '2-digit' }),
           tooltipLabel: formatDateTime(point.iso, {
             day: '2-digit',
@@ -165,17 +151,6 @@ function buildTrendModel(
         seriesLabel: 'Công suất',
         stroke: '#0ea5e9',
         fillId: 'trend-hour',
-        xDataKey: 'x',
-        xAxisType: 'number',
-        xAxisScale: 'time',
-        xAxisDomain: [chartNowMs - 60 * 60 * 1000, chartNowMs],
-        xTickFormatter: (value) =>
-          formatDateTime(new Date(Number(value)).toISOString(), {
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-        tooltipLabelFormatter: (_, payload) => String(payload?.[0]?.payload?.tooltipLabel || ''),
-        animationDuration: 900,
         yTickFormatter: (value) => `${Math.round(value)}W`,
         tooltipValueFormatter: (value) => `${value.toFixed(1)} W`,
       };
@@ -198,9 +173,6 @@ function buildTrendModel(
         seriesLabel: 'Công suất',
         stroke: '#2563eb',
         fillId: 'trend-day',
-        xDataKey: 'label',
-        xAxisType: 'category',
-        animationDuration: 500,
         yTickFormatter: (value) => `${value.toFixed(1)}kW`,
         tooltipValueFormatter: (value) => `${value.toFixed(2)} kW`,
       };
@@ -218,9 +190,6 @@ function buildTrendModel(
         seriesLabel: 'Điện năng',
         stroke: '#7c3aed',
         fillId: 'trend-month',
-        xDataKey: 'label',
-        xAxisType: 'category',
-        animationDuration: 500,
         yTickFormatter: (value) => `${value.toFixed(1)}kWh`,
         tooltipValueFormatter: (value) => `${value.toFixed(2)} kWh`,
       };
@@ -234,9 +203,6 @@ function buildTrendModel(
         seriesLabel: 'Điện năng',
         stroke: '#9333ea',
         fillId: 'trend-year',
-        xDataKey: 'label',
-        xAxisType: 'category',
-        animationDuration: 500,
         yTickFormatter: (value) => `${value.toFixed(0)}kWh`,
         tooltipValueFormatter: (value) => `${value.toFixed(2)} kWh`,
       };
@@ -256,9 +222,6 @@ function buildTrendModel(
         seriesLabel: 'Điện năng',
         stroke: '#c026d3',
         fillId: 'trend-all',
-        xDataKey: 'label',
-        xAxisType: 'category',
-        animationDuration: 500,
         yTickFormatter: (value) => `${value.toFixed(0)}kWh`,
         tooltipValueFormatter: (value) => `${value.toFixed(2)} kWh`,
       };
@@ -339,23 +302,11 @@ export default function App() {
   const [hourlyHistory, setHourlyHistory] = useState<HourlyPoint[]>([]);
   const [dailyUsage, setDailyUsage] = useState<DailyUsagePoint[]>([]);
   const [selectedRange, setSelectedRange] = useState<ChartRange>('day');
-  const [chartNowMs, setChartNowMs] = useState(Date.now());
 
   const [socketConnected, setSocketConnected] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const [connectTimeout, setConnectTimeout] = useState(false);
   const [recentPowerDenied, setRecentPowerDenied] = useState(false);
-
-  useEffect(() => {
-    if (selectedRange !== 'hour') return;
-
-    setChartNowMs(Date.now());
-    const timerId = window.setInterval(() => {
-      setChartNowMs(Date.now());
-    }, 1000);
-
-    return () => window.clearInterval(timerId);
-  }, [selectedRange]);
 
   useEffect(() => {
     if (!firebaseConfigured) return;
@@ -378,9 +329,6 @@ export default function App() {
         if (!snapshot.exists()) return;
         const nextRealtime = normalizeRealtime(snapshot.val());
         setRealtimeData(nextRealtime);
-        if (nextRealtime.timestamp) {
-          setChartNowMs(new Date(nextRealtime.timestamp).getTime());
-        }
 
         if (!recentPowerDenied || !nextRealtime.timestamp) return;
 
@@ -437,7 +385,7 @@ export default function App() {
     };
   }, [recentPowerDenied]);
 
-  const trend = buildTrendModel(selectedRange, recentPower, hourlyHistory, dailyUsage, chartNowMs);
+  const trend = buildTrendModel(selectedRange, recentPower, hourlyHistory, dailyUsage);
 
   const lastUpdated =
     realtimeData.timestamp &&
@@ -593,19 +541,7 @@ export default function App() {
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="var(--color-border)" />
-                  <XAxis
-                    dataKey={trend.xDataKey}
-                    type={trend.xAxisType}
-                    scale={trend.xAxisScale}
-                    domain={trend.xAxisDomain}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fontSize: 11, fill: '#5c6370' }}
-                    dy={8}
-                    minTickGap={24}
-                    tickCount={selectedRange === 'hour' ? 6 : undefined}
-                    tickFormatter={trend.xTickFormatter}
-                  />
+                  <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#5c6370' }} dy={8} minTickGap={24} />
                   <YAxis
                     width={56}
                     axisLine={false}
@@ -614,11 +550,7 @@ export default function App() {
                     tickFormatter={trend.yTickFormatter}
                   />
                   <Tooltip
-                    labelFormatter={(label, payload) =>
-                      trend.tooltipLabelFormatter
-                        ? trend.tooltipLabelFormatter(label, payload as readonly { payload?: TrendPoint }[])
-                        : String((payload?.[0] as { payload?: TrendPoint } | undefined)?.payload?.tooltipLabel || label || '')
-                    }
+                    labelFormatter={(_, payload) => String(payload?.[0]?.payload?.tooltipLabel || '')}
                     formatter={(value: number) => [trend.tooltipValueFormatter(Number(value)), trend.seriesLabel]}
                     contentStyle={{
                       borderRadius: '10px',
@@ -626,16 +558,7 @@ export default function App() {
                       fontSize: '12px',
                     }}
                   />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    stroke={trend.stroke}
-                    strokeWidth={2}
-                    fill={`url(#${trend.fillId})`}
-                    isAnimationActive
-                    animationDuration={trend.animationDuration}
-                    animationEasing="linear"
-                  />
+                  <Area type="monotone" dataKey="value" stroke={trend.stroke} strokeWidth={2} fill={`url(#${trend.fillId})`} />
                 </AreaChart>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-on-surface-muted">
