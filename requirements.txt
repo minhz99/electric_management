@@ -1,5 +1,4 @@
 python-dotenv
 paho-mqtt>=1.6.1,<2.0.0
-schedule==1.2.0
 firebase-admin==6.5.0
 amqtt==0.11.0

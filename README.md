@@ -70,7 +70,15 @@ An "All-in-One" electricity monitoring and management system designed for real-t
 
 ## ⚡ Running the System
 
-To start the entire system (Broker, Processor, and Web Frontend), simply run:
+Build dashboard React trước:
+
+```bash
+cd kinetic-precision
+npm run build
+cd ..
+```
+
+Sau đó khởi động toàn bộ hệ thống (Broker, Processor, và web server tĩnh):
 
 ```bash
 python main.py
@@ -78,7 +86,7 @@ python main.py
 
 -   The **MQTT Broker** will start on `tcp://0.0.0.0:1883`.
 -   The **Data Processor** will begin listening for sensor data.
--   The **React Dashboard** will spin up (defaulting to the development server).
+-   The **Web Server** will serve `kinetic-precision/dist` on port `5535` (fallback to `frontend/` only if no production build is found).
 
 ## 💰 Electricity Pricing (EVN Tiers)
 

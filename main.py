@@ -1,7 +1,7 @@
 # main.py
 """
 File chính để chạy hệ thống quản lý điện năng.
-Serve giao diện web tĩnh (frontend/) và chạy MQTT broker + processor.
+Serve dashboard web tĩnh và chạy MQTT broker + processor.
 """
 
 import logging
@@ -43,8 +43,24 @@ def _run_broker():
         logger.error(f"Lỗi Broker: {e}")
 
 # ── Static web server ────────────────────────────────────────────────────────
+def _resolve_web_root() -> str:
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    dist_root = os.path.join(project_root, 'kinetic-precision', 'dist')
+    legacy_root = os.path.join(project_root, 'frontend')
+
+    if os.path.exists(dist_root):
+        logger.info(f"🌐 Phục vụ dashboard React production từ: {dist_root}")
+        return dist_root
+
+    logger.warning(
+        "⚠️ Không tìm thấy kinetic-precision/dist, fallback sang frontend cũ. "
+        "Chạy `cd kinetic-precision && npm run build` để dùng dashboard React làm mặc định."
+    )
+    return legacy_root
+
+
 def start_web_server(port: int = 5535):
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend')
+    root = _resolve_web_root()
     
     if not os.path.exists(root):
         logger.error(f"❌ KHÔNG THẤY THƯ MỤC FRONTEND TẠI: {root}")

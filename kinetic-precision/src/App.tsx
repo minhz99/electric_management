@@ -19,7 +19,7 @@ import {
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { ref, onValue } from 'firebase/database';
+import { ref, onValue, query, orderByKey, limitToLast } from 'firebase/database';
 import { db, firebaseConfigured, getDatabaseHostLabel } from './firebase';
 
 function cn(...inputs: ClassValue[]) {
@@ -32,6 +32,7 @@ function todayKeyVietnam(): string {
 
 const EMPTY_METRICS = { voltage: 0, current: 0, power: 0, frequency: 0, pf: 0 };
 const EMPTY_CONSUMPTION = { daily_kwh: 0, monthly_kwh: 0, daily_cost: 0, monthly_cost: 0 };
+type DayHistoryMap = Record<string, { power?: number }>;
 
 function normalizeRealtime(raw: unknown): {
   metrics: typeof EMPTY_METRICS;
@@ -47,6 +48,15 @@ function normalizeRealtime(raw: unknown): {
     consumption: { ...EMPTY_CONSUMPTION, ...c },
     timestamp: typeof o.timestamp === 'string' ? o.timestamp : null,
   };
+}
+
+function normalizeDayHistory(dayHistory: DayHistoryMap): { time: string; power: number }[] {
+  return Object.keys(dayHistory)
+    .sort()
+    .map((time) => {
+      const p = dayHistory[time]?.power ?? 0;
+      return { time, power: +(p / 1000).toFixed(2) };
+    });
 }
 
 function Stat({
@@ -107,6 +117,7 @@ function ChartPanel({ title, subtitle, children }: { title: string; subtitle?: s
 }
 
 export default function App() {
+  const [todayKey, setTodayKey] = useState(todayKeyVietnam());
   const [realtimeData, setRealtimeData] = useState({
     metrics: EMPTY_METRICS,
     consumption: EMPTY_CONSUMPTION,
@@ -121,9 +132,39 @@ export default function App() {
   const [connectTimeout, setConnectTimeout] = useState(false);
 
   useEffect(() => {
+    const syncTodayKey = () => {
+      const next = todayKeyVietnam();
+      setTodayKey((prev) => (prev === next ? prev : next));
+    };
+
+    syncTodayKey();
+    const id = window.setInterval(syncTodayKey, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
     if (!firebaseConfigured) return;
 
     const onDenied = (err: Error) => setReadError(err.message);
+    let todayHistory: DayHistoryMap | null = null;
+    let fallbackHistory: { dayKey: string; values: DayHistoryMap } | null = null;
+
+    const syncHistoryChart = () => {
+      if (todayHistory && Object.keys(todayHistory).length > 0) {
+        setHistoryChartDay(todayKey);
+        setPowerHistory(normalizeDayHistory(todayHistory));
+        return;
+      }
+
+      if (fallbackHistory) {
+        setHistoryChartDay(fallbackHistory.dayKey);
+        setPowerHistory(normalizeDayHistory(fallbackHistory.values));
+        return;
+      }
+
+      setHistoryChartDay(null);
+      setPowerHistory([]);
+    };
 
     const unsubSocket = onValue(
       ref(db, '.info/connected'),
@@ -139,44 +180,37 @@ export default function App() {
       onDenied
     );
 
-    const unsubHistory = onValue(
-      ref(db, 'history'),
+    const unsubTodayHistory = onValue(
+      ref(db, `history/${todayKey}`),
+      (snapshot) => {
+        todayHistory = snapshot.exists() ? (snapshot.val() as DayHistoryMap) : null;
+        syncHistoryChart();
+      },
+      onDenied
+    );
+
+    const unsubLatestHistory = onValue(
+      query(ref(db, 'history'), orderByKey(), limitToLast(1)),
       (snapshot) => {
         if (snapshot.exists()) {
-          const historyMap = snapshot.val() as Record<string, Record<string, { power?: number }>>;
-          const todayStr = todayKeyVietnam();
-          const sortedDays = Object.keys(historyMap).sort();
-          const dayKey =
-            historyMap[todayStr] && Object.keys(historyMap[todayStr]).length > 0
-              ? todayStr
-              : sortedDays[sortedDays.length - 1];
-          setHistoryChartDay(dayKey ?? null);
-          const dayHistory = dayKey ? historyMap[dayKey] || {} : {};
-          setPowerHistory(
-            Object.keys(dayHistory)
-              .sort()
-              .map((time) => {
-                const p = dayHistory[time]?.power ?? 0;
-                return { time, power: +(p / 1000).toFixed(2) };
-              })
-          );
+          const latest = Object.entries(snapshot.val() as Record<string, DayHistoryMap>).at(0);
+          fallbackHistory = latest ? { dayKey: latest[0], values: latest[1] } : null;
         } else {
-          setPowerHistory([]);
-          setHistoryChartDay(null);
+          fallbackHistory = null;
         }
+        syncHistoryChart();
       },
       onDenied
     );
 
     const unsubUsage = onValue(
-      ref(db, 'daily_usage'),
+      query(ref(db, 'daily_usage'), orderByKey(), limitToLast(7)),
       (snapshot) => {
         if (snapshot.exists()) {
           const usageMap = snapshot.val() as Record<string, number>;
           setDailyUsage(
             Object.keys(usageMap)
               .sort()
-              .slice(-7)
               .map((date) => ({
                 day: date.substring(5),
                 value: +Number(usageMap[date]).toFixed(2),
@@ -195,10 +229,11 @@ export default function App() {
       window.clearTimeout(t);
       unsubSocket();
       unsubRt();
-      unsubHistory();
+      unsubTodayHistory();
+      unsubLatestHistory();
       unsubUsage();
     };
-  }, []);
+  }, [todayKey]);
 
   const lastUpdated =
     realtimeData.timestamp &&
@@ -333,7 +368,7 @@ export default function App() {
           title="Công suất theo giờ"
           subtitle={
             historyChartDay
-              ? `Ngày ${historyChartDay}${historyChartDay !== todayKeyVietnam() ? ' (dữ liệu gần nhất)' : ''} · đơn vị kW`
+              ? `Ngày ${historyChartDay}${historyChartDay !== todayKey ? ' (dữ liệu gần nhất)' : ''} · đơn vị kW`
               : 'Đơn vị kW · múi giờ Việt Nam'
           }
         >

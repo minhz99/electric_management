@@ -6,20 +6,19 @@ Tự động khôi phục state khi server restart.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from typing import Dict
-import schedule
 
 STATE_SAVE_INTERVAL_SEC = 300  # Lưu state tối đa mỗi 5 phút
-REALTIME_CHART_MAX_POINTS = 120  # Giữ tối đa 120 điểm trong /realtime_chart
+ENERGY_ROLLBACK_TOLERANCE_KWH = 0.001
+HISTORY_RETENTION_DAYS = 1095   # 3 năm dữ liệu theo giờ
+DAILY_USAGE_RETENTION_DAYS = 3650  # 10 năm dữ liệu tổng theo ngày
 
 from config import (
     init_firebase,
     init_mqtt,
     TIMEZONE_GMT7,
-    DAILY_RESET_TIME,
-    MONTH_START_DAY,
     PZEM_ENERGY_OFFSET_KWH,
 )
 
@@ -35,25 +34,23 @@ class ElectricityProcessor:
         """Khởi tạo processor với kết nối Firebase và MQTT"""
         self.firebase_ref = init_firebase()
         if not self.firebase_ref:
-            logger.error("Không thể khởi động do lỗi kết nối Firebase.")
-            # Core functions will skip saving if ref is None
+            raise RuntimeError("Không thể khởi động do lỗi kết nối Firebase.")
             
         self.state_ref = self.firebase_ref.child('state') if self.firebase_ref else None
         self.realtime_ref = self.firebase_ref.child('realtime') if self.firebase_ref else None
         self.history_ref = self.firebase_ref.child('history') if self.firebase_ref else None
-        self.chart_ref = self.firebase_ref.child('realtime_chart') if self.firebase_ref else None
 
         self.last_energy_reading = None
         self.monthly_start_energy = None
         self.daily_start_energy = None
 
-        self.last_save_hour = -1
+        self.last_history_slot = None
         self.last_state_save_time = 0.0  # throttle: save state tối đa mỗi 5 phút
+        self.last_processed_date = None
+        self.last_processed_month_key = None
 
         # Khởi tạo giá trị ban đầu từ Firebase
         self._initialize_energy_baseline()
-
-        schedule.every().day.at(DAILY_RESET_TIME).do(self._reset_daily_and_monthly_baselines)
 
         logger.info("Đã khởi tạo ElectricityProcessor.")
     
@@ -80,7 +77,7 @@ class ElectricityProcessor:
             state = self.state_ref.get()
             now = datetime.now(TIMEZONE_GMT7)
             today_str = now.strftime("%Y-%m-%d")
-            current_month = now.month
+            current_month_key = now.strftime("%Y-%m")
 
             if not state:
                 logger.info("Node state trống trên Firebase, sẽ tạo state mới ở lần nhận dữ liệu đầu tiên.")
@@ -94,18 +91,24 @@ class ElectricityProcessor:
 
             saved_date = state.get("last_date", "")
             saved_month = int(state.get("last_month", 0) or 0)
+            saved_month_key = state.get("last_month_key") or (saved_date[:7] if saved_date else "")
+            if not saved_month_key and saved_month:
+                saved_month_key = f"{now.year:04d}-{saved_month:02d}"
 
             self.last_energy_reading = float(state.get("last_energy", 0.0))
             self.monthly_start_energy = float(state.get("monthly_start_energy", 0.0))
             self.daily_start_energy = float(state.get("daily_start_energy", 0.0))
 
-            if saved_month != current_month:
+            if saved_month_key != current_month_key:
                 logger.info("Qua tháng mới khi server tắt — baseline tháng = chỉ số cuối đã lưu.")
                 self.monthly_start_energy = self.last_energy_reading
 
             if saved_date != today_str:
                 logger.info("Qua ngày mới khi server tắt — baseline ngày = chỉ số cuối đã lưu.")
                 self.daily_start_energy = self.last_energy_reading
+
+            self.last_processed_date = today_str
+            self.last_processed_month_key = current_month_key
 
             logger.info("Khôi phục state từ Firebase thành công:")
             logger.info(f"  - Energy cuối (đã trừ offset): {self.last_energy_reading} kWh")
@@ -115,17 +118,43 @@ class ElectricityProcessor:
         except Exception as e:
             logger.error(f"Lỗi khởi tạo energy baseline từ Firebase: {e}")
 
-    def _reset_daily_and_monthly_baselines(self):
-        """00:00: baseline ngày; ngày MONTH_START_DAY: baseline tháng (công tơ không reset)."""
+    def _cleanup_retention(self, now: datetime):
+        """Xóa mốc cũ theo ngày để giữ dữ liệu dài hạn nhưng không tăng vô hạn."""
+        history_expired = (now - timedelta(days=HISTORY_RETENTION_DAYS)).strftime("%Y-%m-%d")
+        usage_expired = (now - timedelta(days=DAILY_USAGE_RETENTION_DAYS)).strftime("%Y-%m-%d")
+
+        try:
+            if self.history_ref:
+                self.history_ref.child(history_expired).delete()
+            if self.firebase_ref:
+                self.firebase_ref.child('daily_usage').child(usage_expired).delete()
+        except Exception as e:
+            logger.warning(f"Lỗi dọn retention Firebase: {e}")
+
+    def _handle_period_rollover(self, now: datetime):
+        """Cập nhật baseline khi bản tin đầu tiên đi qua ranh giới ngày/tháng theo GMT+7."""
+        current_date = now.strftime("%Y-%m-%d")
+        current_month_key = now.strftime("%Y-%m")
+
         if self.last_energy_reading is None:
+            self.last_processed_date = current_date
+            self.last_processed_month_key = current_month_key
             return
-        now = datetime.now(TIMEZONE_GMT7)
-        self.daily_start_energy = self.last_energy_reading
-        if now.day == MONTH_START_DAY:
+
+        day_changed = self.last_processed_date not in (None, current_date)
+        month_changed = self.last_processed_month_key not in (None, current_month_key)
+
+        if month_changed or self.monthly_start_energy is None:
             self.monthly_start_energy = self.last_energy_reading
-            logger.info(f"Đầu tháng — baseline tháng = {self.monthly_start_energy} kWh (đã trừ offset)")
-        self._save_state(self.last_energy_reading, force=True)
-        logger.info(f"Đầu ngày — baseline ngày = {self.daily_start_energy} kWh (đã trừ offset)")
+            logger.info(f"Qua tháng mới — baseline tháng = {self.monthly_start_energy} kWh (đã trừ offset)")
+
+        if day_changed or self.daily_start_energy is None:
+            self.daily_start_energy = self.last_energy_reading
+            logger.info(f"Qua ngày mới — baseline ngày = {self.daily_start_energy} kWh (đã trừ offset)")
+            self._cleanup_retention(now)
+
+        self.last_processed_date = current_date
+        self.last_processed_month_key = current_month_key
 
     def _save_state(self, current_energy: float, force: bool = False):
         """Lưu state lên Firebase, throttle tối đa mỗi STATE_SAVE_INTERVAL_SEC giây."""
@@ -142,6 +171,7 @@ class ElectricityProcessor:
                 "daily_start_energy": self.daily_start_energy,
                 "last_date": now.strftime("%Y-%m-%d"),
                 "last_month": now.month,
+                "last_month_key": now.strftime("%Y-%m"),
                 "last_updated": now.isoformat(),
                 "coord_version": STATE_COORD_VERSION,
                 "pzem_energy_offset_kwh": PZEM_ENERGY_OFFSET_KWH,
@@ -150,29 +180,6 @@ class ElectricityProcessor:
             self.last_state_save_time = now_ts
         except Exception as e:
             logger.error(f"Lỗi ghi state lên Firebase: {e}")
-
-    def _push_realtime_chart(self, power_w: float, now: datetime):
-        """Thêm 1 điểm vào /realtime_chart, giữ tối đa REALTIME_CHART_MAX_POINTS."""
-        if not self.chart_ref:
-            return
-        try:
-            # Miliseconds key - Cực kỳ quan trọng để Frontend vẽ mượt
-            timestamp_ms = int(now.timestamp() * 1000)
-            self.chart_ref.child(str(timestamp_ms)).set({
-                "time": now.isoformat(),
-                "power": round(power_w, 1),
-            })
-            
-            # Cleanup - chỉ giữ lại 120 điểm gần nhất
-            # Chạy cleanup mỗi 10 record để giảm tải Firebase
-            if timestamp_ms % 10 == 0:
-                snap = self.chart_ref.get()
-                if snap and len(snap) > REALTIME_CHART_MAX_POINTS:
-                    keys = sorted(snap.keys())
-                    for k in keys[:-REALTIME_CHART_MAX_POINTS]:
-                        self.chart_ref.child(k).delete()
-        except Exception as e:
-            logger.warning(f"Lỗi push realtime_chart: {e}")
 
     def process_mqtt_message(self, client, userdata, message):
         """Xử lý tin nhắn MQTT từ ESP8266"""
@@ -199,10 +206,25 @@ class ElectricityProcessor:
                 return
             energy = self._to_adjusted_kwh(raw_energy)
 
+            if self.last_energy_reading is not None:
+                if energy + ENERGY_ROLLBACK_TOLERANCE_KWH < self.last_energy_reading:
+                    logger.warning(
+                        "Bỏ qua mẫu MQTT vì energy đi lùi: raw=%.3f adjusted=%.3f last=%.3f",
+                        raw_energy,
+                        energy,
+                        self.last_energy_reading,
+                    )
+                    return
+                if energy < self.last_energy_reading:
+                    energy = self.last_energy_reading
+
             if self.last_energy_reading is None:
                 self.daily_start_energy = energy
                 self.monthly_start_energy = energy
-                self.last_energy_reading = energy
+                self.last_processed_date = today_str
+                self.last_processed_month_key = now.strftime("%Y-%m")
+            else:
+                self._handle_period_rollover(now)
 
             # Tính toán tiêu thụ (energy & baseline trong DB đều là kWh sau offset)
             monthly_consumption = max(0.0, energy - float(self.monthly_start_energy))
@@ -240,19 +262,17 @@ class ElectricityProcessor:
                     "timestamp": now.isoformat(),
                 })
 
-            # 2. Realtime chart (mỗi MQTT message = 1 điểm)
-            self._push_realtime_chart(power_w, now)
-
-            # 3. Lịch sử theo giờ
-            if self.history_ref and now.hour != self.last_save_hour:
+            # 2. Lịch sử theo giờ
+            history_slot = f"{today_str}T{now.hour:02d}"
+            if self.history_ref and history_slot != self.last_history_slot:
                 hour_str = f"{now.hour:02d}:00"
                 self.history_ref.child(today_str).child(hour_str).set({
                     "power": power_w,
                     "energy_accumulated": daily_consumption,
                 })
-                self.last_save_hour = now.hour
+                self.last_history_slot = history_slot
 
-            # 4. Daily usage cho bar chart
+            # 3. Daily usage cho bar chart
             if self.firebase_ref:
                 self.firebase_ref.child('daily_usage').child(today_str).set(daily_consumption)
 
@@ -270,7 +290,6 @@ class ElectricityProcessor:
             logger.info("ElectricityProcessor (Firebase mode) đang chạy...")
             
             while True:
-                schedule.run_pending()
                 time.sleep(1)
                 
         except KeyboardInterrupt:
