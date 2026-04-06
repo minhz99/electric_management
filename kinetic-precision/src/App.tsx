@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, useMemo, type ReactNode } from 'react';
 import { Activity, AlertCircle, CheckCircle2, Database, Loader2, Wallet, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
@@ -364,7 +364,7 @@ export default function App() {
     );
 
     const unsubUsage = onValue(
-      query(ref(db, 'daily_usage'), orderByKey()),
+      query(ref(db, 'daily_usage'), orderByKey(), limitToLast(366)),
       (snapshot) => {
         setDailyUsage(snapshot.exists() ? parseDailyUsage(snapshot.val()) : []);
       },
@@ -385,7 +385,10 @@ export default function App() {
     };
   }, [recentPowerDenied]);
 
-  const trend = buildTrendModel(selectedRange, recentPower, hourlyHistory, dailyUsage);
+  const trend = useMemo(
+    () => buildTrendModel(selectedRange, recentPower, hourlyHistory, dailyUsage),
+    [selectedRange, recentPower, hourlyHistory, dailyUsage]
+  );
 
   const lastUpdated =
     realtimeData.timestamp &&

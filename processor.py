@@ -2,15 +2,18 @@
 """
 Module xử lý dữ liệu MQTT từ ESP8266 PZEM004T và đồng bộ lên Firebase.
 Tự động khôi phục state khi server restart.
+Đã tích hợp ThreadPoolExecutor để I/O không block MQTT hook.
 """
 
 import json
 import logging
+import concurrent.futures
 from datetime import datetime, timedelta
 import time
 from typing import Dict
 
 STATE_SAVE_INTERVAL_SEC = 300  # Lưu state tối đa mỗi 5 phút
+REALTIME_PUSH_INTERVAL_SEC = 10.0  # Throttle độ trễ đẩy lên Realtime (10 giây)
 ENERGY_ROLLBACK_TOLERANCE_KWH = 0.001
 HISTORY_RETENTION_DAYS = 1095   # 3 năm dữ liệu theo giờ
 DAILY_USAGE_RETENTION_DAYS = 3650  # 10 năm dữ liệu tổng theo ngày
@@ -49,9 +52,13 @@ class ElectricityProcessor:
 
         self.last_history_slot = None
         self.last_state_save_time = 0.0  # throttle: save state tối đa mỗi 5 phút
+        self.last_realtime_push_time = 0.0 # throttle realtime/daily_usage push
         self.last_processed_date = None
         self.last_processed_month_key = None
         self.recent_power_writes_since_cleanup = 0
+        
+        # Sử dụng Thread Pool để xử lý bất đồng bộ các request HTTP chặn (Firebase Admin)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
         # Khởi tạo giá trị ban đầu từ Firebase
         self._initialize_energy_baseline()
@@ -127,13 +134,15 @@ class ElectricityProcessor:
         history_expired = (now - timedelta(days=HISTORY_RETENTION_DAYS)).strftime("%Y-%m-%d")
         usage_expired = (now - timedelta(days=DAILY_USAGE_RETENTION_DAYS)).strftime("%Y-%m-%d")
 
-        try:
-            if self.history_ref:
-                self.history_ref.child(history_expired).delete()
-            if self.firebase_ref:
-                self.firebase_ref.child('daily_usage').child(usage_expired).delete()
-        except Exception as e:
-            logger.warning(f"Lỗi dọn retention Firebase: {e}")
+        def worker():
+            try:
+                if self.history_ref:
+                    self.history_ref.child(history_expired).delete()
+                if self.firebase_ref:
+                    self.firebase_ref.child('daily_usage').child(usage_expired).delete()
+            except Exception as e:
+                logger.warning(f"Lỗi dọn retention Firebase: {e}")
+        self.executor.submit(worker)
 
     def _handle_period_rollover(self, now: datetime):
         """Cập nhật baseline khi bản tin đầu tiên đi qua ranh giới ngày/tháng theo GMT+7."""
@@ -167,53 +176,61 @@ class ElectricityProcessor:
         now_ts = time.monotonic()
         if not force and (now_ts - self.last_state_save_time) < STATE_SAVE_INTERVAL_SEC:
             return
-        try:
-            now = datetime.now(TIMEZONE_GMT7)
-            state_data = {
-                "last_energy": current_energy,
-                "monthly_start_energy": self.monthly_start_energy,
-                "daily_start_energy": self.daily_start_energy,
-                "last_date": now.strftime("%Y-%m-%d"),
-                "last_month": now.month,
-                "last_month_key": now.strftime("%Y-%m"),
-                "last_updated": now.isoformat(),
-                "coord_version": STATE_COORD_VERSION,
-                "pzem_energy_offset_kwh": PZEM_ENERGY_OFFSET_KWH,
-            }
-            self.state_ref.update(state_data)
-            self.last_state_save_time = now_ts
-        except Exception as e:
-            logger.error(f"Lỗi ghi state lên Firebase: {e}")
+            
+        now = datetime.now(TIMEZONE_GMT7)
+        state_data = {
+            "last_energy": current_energy,
+            "monthly_start_energy": self.monthly_start_energy,
+            "daily_start_energy": self.daily_start_energy,
+            "last_date": now.strftime("%Y-%m-%d"),
+            "last_month": now.month,
+            "last_month_key": now.strftime("%Y-%m"),
+            "last_updated": now.isoformat(),
+            "coord_version": STATE_COORD_VERSION,
+            "pzem_energy_offset_kwh": PZEM_ENERGY_OFFSET_KWH,
+        }
+        self.last_state_save_time = now_ts
+        
+        def worker():
+            try:
+                self.state_ref.update(state_data)
+            except Exception as e:
+                logger.error(f"Lỗi ghi state lên Firebase: {e}")
+        self.executor.submit(worker)
 
     def _push_recent_power(self, power_w: float, now: datetime):
         """Giữ 60 phút công suất gần nhất để chart "giờ" có dữ liệu sau khi reload UI."""
         if not self.power_recent_ref:
             return
-        try:
-            timestamp_ms = int(now.timestamp() * 1000)
-            self.power_recent_ref.child(str(timestamp_ms)).set({
-                "time": now.isoformat(),
-                "power": round(power_w, 1),
-            })
-
-            self.recent_power_writes_since_cleanup += 1
-            if self.recent_power_writes_since_cleanup < RECENT_POWER_CLEANUP_INTERVAL:
-                return
-
+            
+        timestamp_ms = int(now.timestamp() * 1000)
+        self.recent_power_writes_since_cleanup += 1
+        do_cleanup = (self.recent_power_writes_since_cleanup >= RECENT_POWER_CLEANUP_INTERVAL)
+        if do_cleanup:
             self.recent_power_writes_since_cleanup = 0
-            cutoff_ms = int((now - timedelta(seconds=RECENT_POWER_RETENTION_SECONDS)).timestamp() * 1000)
-            snap = self.power_recent_ref.get()
-            if not snap:
-                return
-
-            for key in snap.keys():
-                try:
-                    if int(key) < cutoff_ms:
-                        self.power_recent_ref.child(key).delete()
-                except (TypeError, ValueError):
-                    self.power_recent_ref.child(key).delete()
-        except Exception as e:
-            logger.warning(f"Lỗi lưu power_recent: {e}")
+            
+        def worker():
+            try:
+                self.power_recent_ref.child(str(timestamp_ms)).set({
+                    "time": now.isoformat(),
+                    "power": round(power_w, 1),
+                })
+                
+                if do_cleanup:
+                    cutoff_ms = int((now - timedelta(seconds=RECENT_POWER_RETENTION_SECONDS)).timestamp() * 1000)
+                    snap = self.power_recent_ref.get()
+                    if not snap:
+                        return
+                    for key in snap.keys():
+                        try:
+                            if int(key) < cutoff_ms:
+                                self.power_recent_ref.child(key).delete()
+                        except (TypeError, ValueError):
+                            self.power_recent_ref.child(key).delete()
+            except Exception as e:
+                logger.warning(f"Lỗi lưu power_recent: {e}")
+                
+        self.executor.submit(worker)
 
     def process_mqtt_message(self, client, userdata, message):
         """Xử lý tin nhắn MQTT từ ESP8266"""
@@ -276,55 +293,73 @@ class ElectricityProcessor:
 
             power_w = float(data.get('power', 0))
 
-            # 1. Realtime node (luôn cập nhật)
-            if self.realtime_ref:
-                self.realtime_ref.set({
-                    "metrics": {
-                        "voltage":   float(data.get('voltage', 0)),
-                        "current":   float(data.get('current', 0)),
-                        "power":     power_w,
-                        "frequency": float(data.get('frequency', 0)),
-                        "pf":        float(data.get('pf', 0)),
-                    },
-                    "consumption": {
-                        "daily_kwh":    daily_consumption,
-                        "monthly_kwh":  monthly_consumption,
-                        "total_kwh":    energy,
-                        "daily_cost":   daily_cost_value,
-                        "monthly_cost": monthly_cost['total'],
-                    },
-                    "timestamp": now.isoformat(),
-                })
+            # 1. Realtime node & Daily Usage (luôn cập nhật nhưng có Throttle giới hạn)
+            now_ts = time.monotonic()
+            if now_ts - self.last_realtime_push_time >= REALTIME_PUSH_INTERVAL_SEC:
+                self.last_realtime_push_time = now_ts
+                
+                def write_realtime():
+                    try:
+                        if self.realtime_ref:
+                            self.realtime_ref.set({
+                                "metrics": {
+                                    "voltage":   float(data.get('voltage', 0)),
+                                    "current":   float(data.get('current', 0)),
+                                    "power":     power_w,
+                                    "frequency": float(data.get('frequency', 0)),
+                                    "pf":        float(data.get('pf', 0)),
+                                },
+                                "consumption": {
+                                    "daily_kwh":    daily_consumption,
+                                    "monthly_kwh":  monthly_consumption,
+                                    "total_kwh":    energy,
+                                    "daily_cost":   daily_cost_value,
+                                    "monthly_cost": monthly_cost['total'],
+                                },
+                                "timestamp": now.isoformat(),
+                            })
+                            
+                        # 2. Ngầm lưu daily usage định kỳ theo nhánh realtime (hạn chế fetch/ghim database tần suất cao)
+                        if self.firebase_ref:
+                            self.firebase_ref.child('daily_usage').child(today_str).set(daily_consumption)
+                    except Exception as e:
+                        logger.error(f"Lỗi ghi Realtime Firebase: {e}")
+                        
+                self.executor.submit(write_realtime)
 
-            # 2. Công suất gần nhất cho chart range "giờ"
+            # 3. Công suất gần nhất cho chart range "giờ"
+            # Cần ghi đè liên tục để biểu đồ giờ có đủ history điểm nếu UI vừa f5. 
+            # Đã có executor Thread bên trong xử lý.
             self._push_recent_power(power_w, now)
 
-            # 3. Lịch sử theo giờ
+            # 4. Lịch sử theo giờ
             history_slot = f"{today_str}T{now.hour:02d}"
             if self.history_ref and history_slot != self.last_history_slot:
                 hour_str = f"{now.hour:02d}:00"
-                self.history_ref.child(today_str).child(hour_str).set({
-                    "power": power_w,
-                    "energy_accumulated": daily_consumption,
-                })
                 self.last_history_slot = history_slot
-
-            # 4. Daily usage cho chart range tháng/năm/all
-            if self.firebase_ref:
-                self.firebase_ref.child('daily_usage').child(today_str).set(daily_consumption)
+                
+                def write_history():
+                    try:
+                        self.history_ref.child(today_str).child(hour_str).set({
+                            "power": power_w,
+                            "energy_accumulated": daily_consumption,
+                        })
+                    except Exception as e:
+                        logger.error(f"Lỗi ghi History Firebase: {e}")
+                self.executor.submit(write_history)
 
             logger.info(
                 f"P={power_w}W  adj_E={energy:.3f}kWh  Daily={daily_consumption:.3f}kWh  Monthly={monthly_consumption:.3f}kWh"
             )
             
         except Exception as e:
-            logger.error(f"Lỗi lưu Firebase: {e}")
+            logger.error(f"Lỗi xử lý Data: {e}")
             
     def run(self):
         try:
             mqtt_client = init_mqtt(self.process_mqtt_message)
             mqtt_client.loop_start()
-            logger.info("ElectricityProcessor (Firebase mode) đang chạy...")
+            logger.info("ElectricityProcessor (Firebase mode) đang chạy (pool: 4 threads)...")
             
             while True:
                 time.sleep(1)
@@ -333,8 +368,10 @@ class ElectricityProcessor:
             logger.info("Đang dừng...")
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
+            self.executor.shutdown(wait=True)
         except Exception as e:
             logger.error(f"Lỗi trong main loop: {e}")
+            self.executor.shutdown(wait=False)
             raise
 
 if __name__ == "__main__":
